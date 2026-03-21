@@ -23,6 +23,10 @@ import 'package:path/path.dart' as p;
 import 'package:GitSync/constant/langDiff.dart';
 import 'package:re_editor/re_editor.dart' as ReEditor;
 
+String _loadLogFile(String path) {
+  return File(path).readAsStringSync();
+}
+
 class LogsChunkAnalyzer implements ReEditor.CodeChunkAnalyzer {
   static const List<String> matchSubstrings = ["RecentCommits:", "GitStatus:", "Getting local directory", ".git folder found"];
 
@@ -365,6 +369,7 @@ class _EditorState extends State<Editor> with WidgetsBindingObserver {
   Mmap? writeMmap;
   Map<String, ReEditor.CodeHighlightThemeMode> languages = {};
   bool logsCollapsed = false;
+  bool isLoading = true;
   List<String> deletionDiffLineNumbers = [];
   List<String> insertionDiffLineNumbers = [];
   bool editorLineWrap = false;
@@ -427,15 +432,22 @@ class _EditorState extends State<Editor> with WidgetsBindingObserver {
 
     if (widget.verticalScrollController != null) verticalController = widget.verticalScrollController!;
 
-    try {
-      _mapFile();
-      controller.text = writeMmap == null ? widget.text ?? "" : utf8.decode(writeMmap!.writableData, allowMalformed: true);
-      if (widget.type == EditorType.LOGS) controller.text = controller.text.split("\n").reversed.join("\n");
-
-      controller.addListener(_onTextChanged);
-    } catch (e) {
-      print(e);
-    }
+    initAsync(() async {
+      try {
+        if (widget.type == EditorType.LOGS && widget.path != null) {
+          final content = await compute(_loadLogFile, widget.path!);
+          controller.text = content.split("\n").reversed.join("\n");
+        } else {
+          _mapFile();
+          controller.text = writeMmap == null ? widget.text ?? "" : utf8.decode(writeMmap!.writableData, allowMalformed: true);
+        }
+        controller.addListener(_onTextChanged);
+      } catch (e) {
+        print(e);
+      }
+      isLoading = false;
+      if (mounted) setState(() {});
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       initAsync(() async {
@@ -529,7 +541,7 @@ class _EditorState extends State<Editor> with WidgetsBindingObserver {
           margin: widget.type == EditorType.DIFF ? EdgeInsets.zero : EdgeInsets.only(left: spaceSM, right: spaceSM, bottom: spaceLG),
           padding: widget.type == EditorType.DIFF ? EdgeInsets.zero : EdgeInsets.only(right: spaceXS, top: spaceXXXXS),
           clipBehavior: Clip.hardEdge,
-          child: widget.type == EditorType.LOGS && !logsCollapsed
+          child: widget.type == EditorType.LOGS && (isLoading || !logsCollapsed)
               ? Center(child: CircularProgressIndicator(color: colours.primaryLight))
               : ReEditor.CodeEditor(
                   controller: controller,
