@@ -624,6 +624,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
   Timer? queueTimer;
 
   Timer? autoRefreshTimer;
+  bool _isAppInForeground = true;
   StreamSubscription<List<ConnectivityResult>>? networkSubscription;
   late AnchorScrollController recentCommitsController = AnchorScrollController(
     onIndexChanged: (index, userScroll) {
@@ -996,7 +997,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
   }
 
   Future<void> updateRecommendedAction({int? override, bool useOverride = false}) async {
-    if (!await uiSettingsManager.getClientModeEnabled()) {
+    if (!await uiSettingsManager.getClientModeEnabled() || !_isAppInForeground) {
       await updateSyncOptions();
       return;
     }
@@ -1021,6 +1022,10 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
 
   void _scheduleNextRecommendedAction(DateTime startTime) {
     autoRefreshTimer?.cancel();
+    
+    // Only schedule if app is in foreground
+    if (!_isAppInForeground) return;
+    
     const minDelay = Duration(seconds: 10);
     final elapsed = DateTime.now().difference(startTime);
     final remaining = minDelay - elapsed;
@@ -1369,10 +1374,12 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
     if (state == AppLifecycleState.resumed) {
+      _isAppInForeground = true;
       await GitManager.clearLocks();
       await reloadAll();
     }
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _isAppInForeground = false;
       autoRefreshTimer?.cancel();
     }
   }
