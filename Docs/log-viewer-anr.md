@@ -227,6 +227,60 @@ The `compute()` approach was chosen as the simplest fix that directly addresses 
 4. Check memory usage doesn't spike during load
 5. Test file navigation (prev/next between log files)
 
+---
+
+## Bug Fix #2: Race Condition in Chunk Collapsing (March 2026)
+
+### Summary
+After fixing the original ANR by moving file loading to a background isolate, a new bug was discovered where the logs page spinner would spin forever without displaying content.
+
+### Root Cause
+The chunk collapsing logic was in a separate `WidgetsBinding.instance.addPostFrameCallback()` block that executed **before** the async file loading completed:
+
+```dart
+// Bug: This runs BEFORE the initAsync above completes
+WidgetsBinding.instance.addPostFrameCallback((_) {
+  initAsync(() async {
+    if (widget.type != EditorType.LOGS || controller.text.isEmpty) return;  // BUG: text is still empty!
+    // chunk collapsing logic never runs...
+    logsCollapsed = true;  // Never set!
+  });
+});
+```
+
+The `postFrameCallback` fires after the first frame is rendered, but the `compute()` call for loading the file takes longer. So:
+1. File loading starts in `initAsync()` 
+2. `postFrameCallback` runs - `controller.text.isEmpty` is true, function returns early
+3. File loading completes, `isLoading = false`, but chunk collapsing never ran
+4. Spinner stays visible because `isLoading || !logsCollapsed` is still true
+
+### Fix Applied
+Moved chunk collapsing logic **inside** the same `initAsync()` block, after the file load completes, ensuring sequential execution:
+
+```dart
+initAsync(() async {
+  // ... load file ...
+  final content = await compute(_loadLogFile, widget.path!);
+  controller.text = content.split("\n").reversed.join("\n");
+  
+  // NOW run chunk collapsing - text is guaranteed to be loaded
+  final chunkController = ReEditor.CodeChunkController(controller, LogsChunkAnalyzer());
+  while (chunkController.value.isEmpty) {
+    await Future.delayed(Duration(milliseconds: 100));
+  }
+  // ... collapse chunks ...
+  logsCollapsed = true;
+  
+  isLoading = false;
+  if (mounted) setState(() {});
+});
+```
+
+### Files Modified
+- `lib/ui/page/code_editor.dart`: Merged chunk collapsing into the async loading block
+
+---
+
 ## Related Files
 
 | File | Purpose |

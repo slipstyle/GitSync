@@ -437,6 +437,26 @@ class _EditorState extends State<Editor> with WidgetsBindingObserver {
         if (widget.type == EditorType.LOGS && widget.path != null) {
           final content = await compute(_loadLogFile, widget.path!);
           controller.text = content.split("\n").reversed.join("\n");
+
+          final chunkController = ReEditor.CodeChunkController(controller, LogsChunkAnalyzer());
+          try {
+            while (chunkController.value.isEmpty) {
+              await Future.delayed(Duration(milliseconds: 100));
+            }
+            int offset = 0;
+
+            for (final chunk in chunkController.value) {
+              chunkController.collapse(chunk.index - offset);
+              offset += max(0, chunk.end - chunk.index - 1);
+            }
+            logsCollapsed = true;
+          } catch (e) {
+            if (e.toString().contains("A _CodeLineEditingControllerImpl was used after being disposed.")) {
+              // Widget disposed during chunk processing, ignore
+            } else {
+              rethrow;
+            }
+          }
         } else {
           _mapFile();
           controller.text = writeMmap == null ? widget.text ?? "" : utf8.decode(writeMmap!.writableData, allowMalformed: true);
@@ -447,32 +467,6 @@ class _EditorState extends State<Editor> with WidgetsBindingObserver {
       }
       isLoading = false;
       if (mounted) setState(() {});
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      initAsync(() async {
-        if (widget.type != EditorType.LOGS || controller.text.isEmpty) return;
-
-        final chunkController = ReEditor.CodeChunkController(controller, LogsChunkAnalyzer());
-        try {
-          while (chunkController.value.isEmpty) {
-            await Future.delayed(Duration(milliseconds: 100));
-          }
-          int offset = 0;
-
-          for (final chunk in chunkController.value) {
-            chunkController.collapse(chunk.index - offset);
-            offset += max(0, chunk.end - chunk.index - 1);
-          }
-          logsCollapsed = true;
-          if (mounted) setState(() {});
-        } catch (e) {
-          if (e.toString().contains("A _CodeLineEditingControllerImpl was used after being disposed.")) {
-            return;
-          }
-          throw e;
-        }
-      });
     });
 
     languages = {
