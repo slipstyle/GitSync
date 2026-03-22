@@ -90,6 +90,10 @@ class GitManager {
   static final _networkStallPatterns = ["network stall detected", "transfer speed was below", "timed out"];
   static bool _isNetworkStallError(String message) => _networkStallPatterns.any((p) => message.toLowerCase().contains(p.toLowerCase()));
 
+  static bool lastOperationWasOidStale = false;
+  static final _oidStalePatterns = ["target oid", "doesn't exist"];
+  static bool _isOidStaleError(String message) => _oidStalePatterns.every((p) => message.toLowerCase().contains(p.toLowerCase()));
+
   static Codec<String, String> stringToBase64 = utf8.fuse(base64);
 
   static FutureOr<T?> _runWithLock<T>(
@@ -1071,9 +1075,16 @@ class GitManager {
         if (_isNetworkStallError(e.message)) {
           Logger.gmLog(type: LogType.DownloadChanges, "Network stall - will retry");
           lastOperationWasNetworkStall = true;
+          lastOperationWasOidStale = false;
           return null;
         }
         lastOperationWasNetworkStall = false;
+        if (_isOidStaleError(e.message)) {
+          Logger.gmLog(type: LogType.DownloadChanges, "FETCH_HEAD OID stale (remote may have changed) - will retry");
+          lastOperationWasOidStale = true;
+          return null;
+        }
+        lastOperationWasOidStale = false;
         if (await _tryAutoFixCorruption(dirPath, e.message)) {
           Logger.gmLog(type: LogType.DownloadChanges, "Corruption detected and auto-fixed");
           return null;
@@ -1119,9 +1130,16 @@ class GitManager {
         if (_isNetworkStallError(e.message)) {
           Logger.gmLog(type: LogType.UploadChanges, "Network stall - will retry");
           lastOperationWasNetworkStall = true;
+          lastOperationWasOidStale = false;
           return null;
         }
         lastOperationWasNetworkStall = false;
+        if (_isOidStaleError(e.message)) {
+          Logger.gmLog(type: LogType.UploadChanges, "FETCH_HEAD OID stale (remote may have changed) - will retry");
+          lastOperationWasOidStale = true;
+          return null;
+        }
+        lastOperationWasOidStale = false;
         if (await _tryAutoFixCorruption(dirPath, e.message)) {
           Logger.gmLog(type: LogType.UploadChanges, "Corruption detected and auto-fixed");
           return null;

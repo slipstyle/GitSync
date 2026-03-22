@@ -2128,21 +2128,47 @@ pub async fn download_changes(
         &log_callback
     ))?;
 
-    if tokio::task::block_in_place(|| {
+    let pull_result = tokio::task::block_in_place(|| {
         pull_changes_priv(
             &repo,
             &provider,
             &credentials,
-            commit_signing_credentials,
+            commit_signing_credentials.clone(),
             sync_callback,
             &log_callback,
         )
-    }) == Ok(Some(false))
-    {
-        return Ok(Some(false));
-    }
+    });
 
-    Ok(Some(true))
+    match pull_result {
+        Ok(Some(false)) => Ok(Some(false)),
+        Ok(Some(true)) => Ok(Some(true)),
+        Ok(None) => Ok(Some(true)),
+        Err(e) => {
+            let err_msg = e.message().to_lowercase();
+            if err_msg.contains("target oid") && err_msg.contains("doesn't exist") {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PullFromRepo,
+                    "FETCH_HEAD OID stale (remote may have changed), re-fetching...".to_string(),
+                );
+                swl!(fetch_remote_priv(
+                    &repo,
+                    &remote,
+                    &provider,
+                    &credentials,
+                    &log_callback
+                ))?;
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PullFromRepo,
+                    "Re-fetch complete, pull will be retried on next sync".to_string(),
+                );
+                Err(e)
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 pub async fn push_changes(
@@ -2231,7 +2257,20 @@ fn push_changes_priv(
                 ))
             )?;
 
-        content.trim().to_string()
+        let trimmed = content.trim();
+
+        if trimmed.is_empty() || trimmed == "HEAD" || !trimmed.contains('/') {
+            let head = swl!(repo.head())?;
+            let resolved_head = swl!(head.resolve())?;
+            let branch_name = swl!(resolved_head
+                .shorthand()
+                .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
+            format!("refs/heads/{}", branch_name)
+        } else if trimmed.starts_with("refs/") {
+            trimmed.to_string()
+        } else {
+            format!("refs/{}", trimmed)
+        }
     } else {
         let head = swl!(repo.head())?;
         let resolved_head = swl!(head.resolve())?;
@@ -2896,9 +2935,44 @@ pub async fn force_pull(
     let repo = swl!(Repository::open(&path_string))?;
     repo.cleanup_state().unwrap();
 
-    let fetch_commit = swl!(repo
+    if let Ok(mut remote) = repo.find_remote("origin") {
+        configure_network_timeouts(&repo);
+        let callbacks = get_default_callbacks(None, None);
+        let mut fetch_options = FetchOptions::new();
+        fetch_options.update_fetchhead(true);
+        fetch_options.remote_callbacks(callbacks);
+        let _ = remote.fetch::<&str>(&[], Some(&mut fetch_options), None);
+    }
+
+    let fetch_commit = match swl!(repo
         .find_reference("FETCH_HEAD")
-        .and_then(|r| repo.reference_to_annotated_commit(&r)))?;
+        .and_then(|r| repo.reference_to_annotated_commit(&r))) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = e.message().to_lowercase();
+            if err_msg.contains("target oid") && err_msg.contains("doesn't exist") {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::ForcePull,
+                    "FETCH_HEAD OID stale, re-fetching...".to_string(),
+                );
+                if let Ok(mut remote) = repo.find_remote("origin") {
+                    configure_network_timeouts(&repo);
+                    let callbacks = get_default_callbacks(None, None);
+                    let mut fetch_options = FetchOptions::new();
+                    fetch_options.update_fetchhead(true);
+                    fetch_options.remote_callbacks(callbacks);
+                    swl!(remote.fetch::<&str>(&[], Some(&mut fetch_options), None))?;
+                    swl!(repo.find_reference("FETCH_HEAD")
+                        .and_then(|r| repo.reference_to_annotated_commit(&r)))?
+                } else {
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
     let git_dir = repo.path();
     let rebase_head_path = git_dir.join("rebase-merge").join("head-name");
@@ -3320,9 +3394,30 @@ pub async fn download_and_overwrite(
 
     swl!(remote.fetch::<&str>(&[], Some(&mut fetch_options), None))?;
 
-    let fetch_commit = swl!(repo
+    let fetch_commit = match swl!(repo
         .find_reference("FETCH_HEAD")
-        .and_then(|r| repo.reference_to_annotated_commit(&r)))?;
+        .and_then(|r| repo.reference_to_annotated_commit(&r))) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = e.message().to_lowercase();
+            if err_msg.contains("target oid") && err_msg.contains("doesn't exist") {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::ForcePull,
+                    "FETCH_HEAD OID stale, re-fetching...".to_string(),
+                );
+                let callbacks = get_default_callbacks(Some(&provider), Some(&credentials));
+                let mut fetch_options = FetchOptions::new();
+                fetch_options.update_fetchhead(true);
+                fetch_options.remote_callbacks(callbacks);
+                swl!(remote.fetch::<&str>(&[], Some(&mut fetch_options), None))?;
+                swl!(repo.find_reference("FETCH_HEAD")
+                    .and_then(|r| repo.reference_to_annotated_commit(&r)))?
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
     let git_dir = repo.path();
     let rebase_head_path = git_dir.join("rebase-merge").join("head-name");

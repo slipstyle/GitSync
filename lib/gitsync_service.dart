@@ -234,6 +234,9 @@ class GitsyncService {
                 if (GitManager.lastOperationWasNetworkStall) {
                   await _displaySyncMessage(settingsManager, s.networkStallRetry);
                   _scheduleStallRetry(repomanRepoindex);
+                } else if (GitManager.lastOperationWasOidStale) {
+                  await _displaySyncMessage(settingsManager, "Remote changed during sync - will retry");
+                  _scheduleStallRetry(repomanRepoindex);
                 }
                 return;
               }
@@ -272,6 +275,9 @@ class GitsyncService {
                 Logger.gmLog(type: LogType.Sync, "Push Repo Failed");
                 if (GitManager.lastOperationWasNetworkStall) {
                   await _displaySyncMessage(settingsManager, s.networkStallRetry);
+                  _scheduleStallRetry(repomanRepoindex);
+                } else if (GitManager.lastOperationWasOidStale) {
+                  await _displaySyncMessage(settingsManager, "Remote changed during sync - will retry");
                   _scheduleStallRetry(repomanRepoindex);
                 }
                 return;
