@@ -2118,6 +2118,18 @@ pub async fn download_changes(
     );
     let repo = swl!(Repository::open(path_string))?;
     set_author(&repo, &author);
+
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
+
     swl!(repo.cleanup_state())?;
 
     swl!(fetch_remote_priv(
@@ -2171,6 +2183,48 @@ pub async fn download_changes(
     }
 }
 
+fn ensure_head_attached(repo: &Repository) -> Result<bool, git2::Error> {
+    if !repo.head_detached()? {
+        return Ok(false);
+    }
+
+    let head = repo.head()?;
+    let current_oid = head.target()
+        .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+    let mut matching_branches: Vec<String> = Vec::new();
+
+    let branches = repo.branches(Some(BranchType::Local))?;
+    for branch_result in branches {
+        let (branch, _) = branch_result?;
+        let branch_name = if let Some(name) = branch.name().ok().flatten() {
+            name.to_string()
+        } else {
+            continue;
+        };
+        
+        let branch_ref = branch.into_reference();
+        if let Ok(commit) = branch_ref.peel_to_commit() {
+            if commit.id() == current_oid {
+                matching_branches.push(branch_name);
+            }
+        }
+    }
+
+    match matching_branches.len() {
+        0 => Err(git2::Error::from_str("Detached HEAD: no branch contains current commit")),
+        1 => {
+            repo.set_head(&format!("refs/heads/{}", matching_branches[0]))?;
+            Ok(true)
+        }
+        _ => Err(git2::Error::from_str(&format!(
+            "Detached HEAD: current commit is on {} branches: {}. Choose manually.",
+            matching_branches.len(),
+            matching_branches.join(", ")
+        ))),
+    }
+}
+
 pub async fn push_changes(
     path_string: &String,
     remote_name: &String,
@@ -2187,6 +2241,17 @@ pub async fn push_changes(
         "Getting local directory".to_string(),
     );
     let repo = swl!(Repository::open(&path_string))?;
+
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
 
     _log(
         Arc::clone(&log_callback),
@@ -2786,6 +2851,17 @@ pub async fn upload_changes(
     );
     let repo = swl!(Repository::open(&path_string))?;
     set_author(&repo, &author);
+
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
 
     _log(
         Arc::clone(&log_callback),
