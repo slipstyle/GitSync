@@ -194,54 +194,14 @@ let refname = if rebase_head_path.exists() {
 
 | File | Lines | Change Description |
 |------|-------|-------------------|
-| `rust/src/api/git_manager.rs` | 2226-2258 | Added validation for rebase ref content |
-
----
-
-## Testing Recommendations
-
-1. **Corrupted rebase state test:**
-   - Manually create `.git/rebase-merge/head-name` with invalid content
-   - Attempt push operation
-   - Verify push succeeds with corrected refspec
-
-2. **Interrupted rebase test:**
-   - Start rebase
-   - Interrupt it (kill process, power loss simulation)
-   - Attempt push
-   - Verify push succeeds
-
-3. **Various malformed content test:**
-   - Test with "HEAD"
-   - Test with empty string
-   - Test with partial refs like "master"
-   - Test with "refs/heads/HEAD"
-   - Verify all cases are handled correctly
-
----
-
-## Related Issues
-
-- May occur after failed rebase operations
-- May occur if user switches between GitSync and other git clients
-- Related to reports of "push failed" during active development
-
----
-
-## Log Patterns to Watch For
-
-```
-"Failed to read rebase head-name file"
-"src refspec 'refs/heads/HEAD' does not match"
-```
+| `rust/src/api/git_manager.rs` | 2226-2258 | Added validation for rebase ref content in `push_changes_priv` |
+| `rust/src/api/git_manager.rs` | 3422-3455 | Added validation for rebase ref content in `download_and_overwrite` |
 
 ---
 
 ## Additional Notes
 
-The same pattern of reading `rebase-merge/head-name` exists in other functions:
-- `force_pull` (line ~2905)
-- `download_and_overwrite` (line ~3329)
-
-These may also need similar validation if they are used during rebase scenarios.
+The same pattern of reading `rebase-merge/head-name` exists in multiple functions. Both `push_changes_priv` and `download_and_overwrite` now have validation. Other functions that may need similar validation in the future:
+- `force_pull` (line ~2978)
+- Other functions at lines 3267, 3089
 

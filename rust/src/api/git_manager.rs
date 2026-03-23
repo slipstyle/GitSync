@@ -2829,32 +2829,67 @@ pub async fn upload_changes(
         uncommitted_file_paths.into_iter().map(|(p, _)| p).collect()
     };
 
-    match index.add_all(paths.iter(), git2::IndexAddOption::DEFAULT, None) {
-        Ok(_) => {}
-        Err(_) => {
-            let non_submodule_paths: Vec<&String> = paths
-                .iter()
-                .filter(|path| repo.find_submodule(path).is_err())
-                .collect();
-            swl!(index.update_all(non_submodule_paths.iter(), None))?;
+    let max_retries = 3;
+    let mut last_error = None;
+    let mut updated_tree_oid: Option<git2::Oid> = None;
+    for attempt in 0..max_retries {
+        if attempt > 0 {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::PushToRepo,
+                format!("Retrying index operations (attempt {}/{})", attempt + 1, max_retries),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2000 * (attempt as u64)));
         }
+
+        match index.add_all(paths.iter(), git2::IndexAddOption::DEFAULT, None) {
+            Ok(_) => {}
+            Err(e) => {
+                let err_msg = e.message().to_lowercase();
+                if err_msg.contains("file changed") && attempt < max_retries - 1 {
+                    last_error = Some(e);
+                    continue;
+                }
+                let non_submodule_paths: Vec<&String> = paths
+                    .iter()
+                    .filter(|path| repo.find_submodule(path).is_err())
+                    .collect();
+                swl!(index.update_all(non_submodule_paths.iter(), None))?;
+            }
+        }
+
+        for path in &paths {
+            if let Ok(mut sm) = repo.find_submodule(path) {
+                let sm_repo = swl!(sm.open())?;
+                swl!(sm_repo.index()?.write())?;
+                swl!(sm.add_to_index(false))?;
+            }
+        }
+
+        swl!(index.write())?;
+
+        updated_tree_oid = if !index.has_conflicts() {
+            match swl!(index.write_tree()) {
+                Ok(oid) => Some(oid),
+                Err(e) => {
+                    let err_msg = e.message().to_lowercase();
+                    if err_msg.contains("file changed") && attempt < max_retries - 1 {
+                        last_error = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        } else {
+            None
+        };
+
+        break;
     }
 
-    for path in &paths {
-        if let Ok(mut sm) = repo.find_submodule(path) {
-            let sm_repo = swl!(sm.open())?;
-            swl!(sm_repo.index()?.write())?;
-            swl!(sm.add_to_index(false))?;
-        }
+    if let Some(e) = last_error {
+        return Err(e);
     }
-
-    swl!(index.write())?;
-
-    let updated_tree_oid = if !index.has_conflicts() {
-        Some(swl!(index.write_tree())?)
-    } else {
-        None
-    };
 
     let should_commit = match (initial_tree_oid, updated_tree_oid) {
         (Some(old), Some(new)) => old != new,
@@ -3429,7 +3464,20 @@ pub async fn download_and_overwrite(
                 ))
             )?;
 
-        content.trim().to_string()
+        let trimmed = content.trim();
+
+        if trimmed.is_empty() || trimmed == "HEAD" || !trimmed.contains('/') {
+            let head = swl!(repo.head())?;
+            let resolved_head = swl!(head.resolve())?;
+            let branch_name = swl!(resolved_head
+                .shorthand()
+                .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
+            format!("refs/heads/{}", branch_name)
+        } else if trimmed.starts_with("refs/") {
+            trimmed.to_string()
+        } else {
+            format!("refs/{}", trimmed)
+        }
     } else {
         let head = swl!(repo.head())?;
         let resolved_head = swl!(head.resolve())?;
@@ -4317,7 +4365,7 @@ pub async fn prune_corrupted_loose_objects(path_string: String) -> Result<(), gi
 
             if let Err(e) = odb.read_header(oid) {
                 let msg = e.message().to_lowercase();
-                if msg.contains("failed to parse loose object") {
+                if msg.contains("failed to parse loose object") || msg.contains("invalid header") {
                     let _ = fs::remove_file(file_entry.path());
                     pruned += 1;
                 }
