@@ -998,7 +998,6 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
 
   Future<void> updateRecommendedAction({int? override, bool useOverride = false}) async {
     if (!await uiSettingsManager.getClientModeEnabled() || !_isAppInForeground) {
-      await updateSyncOptions();
       return;
     }
     autoRefreshTimer?.cancel();
