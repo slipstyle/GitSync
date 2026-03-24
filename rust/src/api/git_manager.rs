@@ -2340,10 +2340,11 @@ fn push_changes_priv(
                 if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
                     for branch_result in branches.flatten() {
                         let (branch, _) = branch_result;
-                        if let Some(name) = branch.name().ok().flatten() {
+                        let branch_name_str = branch.name().ok().flatten().map(|s| s.to_string());
+                        if let Some(name) = branch_name_str {
                             if let Ok(commit) = branch.into_reference().peel_to_commit() {
                                 if commit.id() == current_oid {
-                                    matching_branches.push(name.to_string());
+                                    matching_branches.push(name);
                                 }
                             }
                         }
@@ -2352,12 +2353,11 @@ fn push_changes_priv(
 
                 match matching_branches.len() {
                     0 => {
-                        // No matching branches, use default
                         let default_branch = repo.find_branch("master", BranchType::Local)
                             .or_else(|_| repo.find_branch("main", BranchType::Local))
                             .ok()
-                            .and_then(|b| b.name().ok().flatten())
-                            .unwrap_or("master");
+                            .and_then(|b| b.name().ok().flatten().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "master".to_string());
                         format!("refs/heads/{}", default_branch)
                     }
                     1 => format!("refs/heads/{}", matching_branches[0]),
@@ -2387,10 +2387,11 @@ fn push_changes_priv(
             if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
                 for branch_result in branches.flatten() {
                     let (branch, _) = branch_result;
-                    if let Some(name) = branch.name().ok().flatten() {
+                    let branch_name_str = branch.name().ok().flatten().map(|s| s.to_string());
+                    if let Some(name) = branch_name_str {
                         if let Ok(commit) = branch.into_reference().peel_to_commit() {
                             if commit.id() == current_oid {
-                                matching_branches.push(name.to_string());
+                                matching_branches.push(name);
                             }
                         }
                     }
@@ -2399,12 +2400,11 @@ fn push_changes_priv(
 
             match matching_branches.len() {
                 0 => {
-                    // No matching branches, use default
                     let default_branch = repo.find_branch("master", BranchType::Local)
                         .or_else(|_| repo.find_branch("main", BranchType::Local))
                         .ok()
-                        .and_then(|b| b.name().ok().flatten())
-                        .unwrap_or("master");
+                        .and_then(|b| b.name().ok().flatten().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "master".to_string());
                     format!("refs/heads/{}", default_branch)
                 }
                 1 => format!("refs/heads/{}", matching_branches[0]),
@@ -2464,7 +2464,8 @@ fn push_changes_priv(
                 while let Some(op) = rebase.next() {
                     let commit_id = swl!(op)?.id();
                     let commit = swl!(repo.find_commit(commit_id))?;
-                    match swl!(rebase.commit(None, &commit.author(), None)) {
+                    let author = commit.author();
+                    match swl!(rebase.commit(None, &author, None)) {
                         Ok(_) => {}
                         Err(e) if e.code() == ErrorCode::Applied => continue,
                         Err(e) => return Err(e),
@@ -3044,17 +3045,6 @@ pub async fn upload_changes(
                 format!("Retrying index operations (attempt {}/{})", attempt + 1, max_retries),
             );
             std::thread::sleep(std::time::Duration::from_millis(2000 * (attempt as u64)));
-
-            match prune_corrupted_loose_objects(path_string.clone()).await {
-                Ok(_) => {}
-                Err(e) => {
-                    _log(
-                        Arc::clone(&log_callback),
-                        LogType::Global,
-                        format!("Error pruning corrupted objects on retry: {}", e.message()),
-                    );
-                }
-            }
         }
 
         match index.add_all(paths.iter(), git2::IndexAddOption::DEFAULT, None) {
