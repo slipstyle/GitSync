@@ -2503,7 +2503,19 @@ fn push_changes_priv(
                 "Attempting rebase on REJECTED_NONFASTFORWARD3".to_string(),
             );
 
-            if repo.state() != RepositoryState::Clean {
+            // Handle MERGE state first before attempting to start rebase
+            // This prevents MERGE → REBASE transition which leaves repo in inconsistent state
+            if repo.state() == RepositoryState::Merge {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PushToRepo,
+                    "Repository in MERGE state, aborting merge before rebase".to_string(),
+                );
+                let head = swl!(repo.head()?.peel_to_commit())?;
+                swl!(repo.reset(head.as_object(), ResetType::Hard, None))?;
+                swl!(repo.cleanup_state())?;
+            } else if repo.state() != RepositoryState::Clean {
+                // Handle existing rebase state
                 if let Some(mut rebase) = repo.open_rebase(None).ok() {
                     swl!(rebase.abort())?;
                 }
