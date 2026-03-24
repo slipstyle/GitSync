@@ -2449,6 +2449,35 @@ fn push_changes_priv(
                 .shorthand()
                 .ok_or_else(|| git2::Error::from_str("Invalid branch")))?;
 
+            // Handle detached HEAD state where shorthand() returns literal "HEAD"
+            let branch_name = if branch_name == "HEAD" {
+                let current_oid = head.target()
+                    .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+                let mut matching_branches: Vec<String> = Vec::new();
+                if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                    for branch_result in branches.flatten() {
+                        let (branch, _) = branch_result;
+                        let branch_name_str = branch.name().ok().flatten().map(|s| s.to_string());
+                        if let Some(name) = branch_name_str {
+                            if let Ok(commit) = branch.into_reference().peel_to_commit() {
+                                if commit.id() == current_oid {
+                                    matching_branches.push(name);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                match matching_branches.len() {
+                    0 => "master".to_string(),
+                    1 => matching_branches[0].clone(),
+                    _ => matching_branches[0].clone(),
+                }
+            } else {
+                branch_name.to_string()
+            };
+
             let remote_branch_ref = format!("refs/remotes/{}/{}", remote_name, branch_name);
 
             _log(
