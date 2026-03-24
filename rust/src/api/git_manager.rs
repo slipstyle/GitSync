@@ -2885,6 +2885,17 @@ pub async fn upload_changes(
         }
     }
 
+    match prune_corrupted_loose_objects(path_string.clone()).await {
+        Ok(_) => {}
+        Err(e) => {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Error pruning corrupted objects: {}", e.message()),
+            );
+        }
+    }
+
     _log(
         Arc::clone(&log_callback),
         LogType::PushToRepo,
@@ -2938,6 +2949,17 @@ pub async fn upload_changes(
                 format!("Retrying index operations (attempt {}/{})", attempt + 1, max_retries),
             );
             std::thread::sleep(std::time::Duration::from_millis(2000 * (attempt as u64)));
+
+            match prune_corrupted_loose_objects(path_string.clone()).await {
+                Ok(_) => {}
+                Err(e) => {
+                    _log(
+                        Arc::clone(&log_callback),
+                        LogType::Global,
+                        format!("Error pruning corrupted objects on retry: {}", e.message()),
+                    );
+                }
+            }
         }
 
         match index.add_all(paths.iter(), git2::IndexAddOption::DEFAULT, None) {
