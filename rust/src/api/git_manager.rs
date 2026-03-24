@@ -2330,7 +2330,42 @@ fn push_changes_priv(
             let branch_name = swl!(resolved_head
                 .shorthand()
                 .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
-            format!("refs/heads/{}", branch_name)
+
+            // Handle detached HEAD state where shorthand() returns literal "HEAD"
+            if branch_name == "HEAD" {
+                let current_oid = head.target()
+                    .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+                let mut matching_branches: Vec<String> = Vec::new();
+                if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                    for branch_result in branches.flatten() {
+                        let (branch, _) = branch_result;
+                        if let Some(name) = branch.name().ok().flatten() {
+                            if let Ok(commit) = branch.into_reference().peel_to_commit() {
+                                if commit.id() == current_oid {
+                                    matching_branches.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                match matching_branches.len() {
+                    0 => {
+                        // No matching branches, use default
+                        let default_branch = repo.find_branch("master", BranchType::Local)
+                            .or_else(|_| repo.find_branch("main", BranchType::Local))
+                            .ok()
+                            .and_then(|b| b.name().ok().flatten())
+                            .unwrap_or("master");
+                        format!("refs/heads/{}", default_branch)
+                    }
+                    1 => format!("refs/heads/{}", matching_branches[0]),
+                    _ => format!("refs/heads/{}", matching_branches[0]),
+                }
+            } else {
+                format!("refs/heads/{}", branch_name)
+            }
         } else if trimmed.starts_with("refs/") {
             trimmed.to_string()
         } else {
@@ -2343,7 +2378,41 @@ fn push_changes_priv(
             .shorthand()
             .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
 
-        format!("refs/heads/{}", branch_name)
+        // Handle detached HEAD state where shorthand() returns literal "HEAD"
+        if branch_name == "HEAD" {
+            let current_oid = head.target()
+                .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+            let mut matching_branches: Vec<String> = Vec::new();
+            if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                for branch_result in branches.flatten() {
+                    let (branch, _) = branch_result;
+                    if let Some(name) = branch.name().ok().flatten() {
+                        if let Ok(commit) = branch.into_reference().peel_to_commit() {
+                            if commit.id() == current_oid {
+                                matching_branches.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            match matching_branches.len() {
+                0 => {
+                    // No matching branches, use default
+                    let default_branch = repo.find_branch("master", BranchType::Local)
+                        .or_else(|_| repo.find_branch("main", BranchType::Local))
+                        .ok()
+                        .and_then(|b| b.name().ok().flatten())
+                        .unwrap_or("master");
+                    format!("refs/heads/{}", default_branch)
+                }
+                1 => format!("refs/heads/{}", matching_branches[0]),
+                _ => format!("refs/heads/{}", matching_branches[0]),
+            }
+        } else {
+            format!("refs/heads/{}", branch_name)
+        }
     };
 
     _log(
