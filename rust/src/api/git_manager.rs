@@ -2893,18 +2893,9 @@ pub async fn commit_changes(
 
         let mut rebase = swl!(repo.open_rebase(None))?;
 
-        // If we're in detached HEAD state, abort the rebase instead of trying to continue
-        // This prevents "this patch has already been applied" errors in broken state
-        if repo.head_detached().unwrap_or(false) {
-            _log(
-                Arc::clone(&log_callback),
-                LogType::PushToRepo,
-                "Detached HEAD during rebase - aborting rebase".to_string(),
-            );
-            swl!(rebase.abort())?;
-            swl!(repo.cleanup_state())?;
-            return Err(git2::Error::from_str("Detached HEAD during rebase - aborted. Please retry sync."));
-        }
+        // Note: We don't abort rebase here for detached HEAD because this function
+        // is called during user-initiated merge resolution, not just sync operations.
+        // The detached HEAD check is only in push_changes to handle sync-specific issues.
 
         let sig = swl!(repo
             .signature()
