@@ -199,6 +199,30 @@ This prevents battery drain from infinite retry loops while user is away, but st
 
 ---
 
+## Additional Fix: Abort Rebase Only in Sync Operations
+
+### Status: FIXED
+
+### Root Cause
+
+The initial fix for aborting rebase during detached HEAD was too aggressive - it aborted rebase in both sync operations AND user-initiated merge conflict resolution.
+
+This caused user-initiated merge resolution to fail when the repo was in detached HEAD state.
+
+### Fix Applied
+
+Removed the detached HEAD check from `commit_changes` function (which handles user-initiated merges) while keeping it in `push_changes` function (which handles sync operations).
+
+- `push_changes`: Aborts rebase when in detached HEAD during sync
+- `commit_changes`: Does NOT abort rebase (allows user to resolve merge conflicts)
+
+**Commit:** `6bc87e7` (branch: `fix/abort-rebase-sync-only`)
+
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Removed detached HEAD check from commit_changes (line ~2896)
+
+---
+
 ## Summary of Fixes
 
 | Bug | Branch | Commit | Status |

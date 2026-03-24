@@ -242,6 +242,24 @@ This prevents battery drain from infinite retry loops while user is away, but st
 
 ---
 
+### 13. Abort Rebase Only in Sync Operations
+
+**Issue:** User-initiated merge conflict resolution was failing due to over-aggressive rebase abort
+
+**Root Cause:** The detached HEAD check was in both push_changes (sync) and commit_changes (user merge), causing user merges to fail.
+
+**Fix:** Removed detached HEAD check from commit_changes, keeping it only in push_changes. This allows user-initiated merges to work while sync operations still handle broken rebase states properly.
+
+**Branch:** `fix/abort-rebase-sync-only`  
+**Commit:** `6bc87e7`
+
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Removed check from commit_changes
+
+**See:** `bug-report_merge_conflict_and_sync_race.md`
+
+---
+
 ## All Fix Branches
 
 | Bug # | Description | Branch | Commit |
@@ -258,6 +276,7 @@ This prevents battery drain from infinite retry loops while user is away, but st
 | 10 | MERGE→REBASE | `fix/merge-to-rebase-transition` | `38fe42f` |
 | 11 | Sync during merge | `fix/skip-sync-during-merge` | `5b45a24` |
 | 12 | Sync retry backoff | `fix/sync-retry-backoff` | `effc96a` |
+| 13 | Abort rebase sync only | `fix/abort-rebase-sync-only` | `6bc87e7` |
 
 ---
 
