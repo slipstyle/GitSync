@@ -8,7 +8,7 @@
 
 **Platform:** Android (and potentially iOS)
 
-**Status:** Fix Implemented (2026-03-21)
+**Status:** Fix Fully Implemented (2026-03-24)
 
 ---
 
@@ -283,6 +283,48 @@ Future<void> updateRecommendedAction({int? override, bool useOverride = false}) 
 - **Client Mode Check:** `lib/main.dart:999`
 - **Scheduled Sync Implementation:** `lib/main.dart:147-172` (WorkManager callbackDispatcher)
 - **App Sync Implementation:** `lib/gitsync_service.dart:362-398` (accessibilityEvent)
+
+---
+
+## Additional Fix: Complete Background Scanning Stop (2026-03-24)
+
+### Problem Discovered After Initial Fix
+
+Even after the initial fix (stopping the timer), the app was still running git operations in background. This was because `updateRecommendedAction()` was calling `updateSyncOptions()` even when in background, triggering git operations every 10 seconds.
+
+### Root Cause
+
+```dart
+// In updateRecommendedAction()
+if (!await uiSettingsManager.getClientModeEnabled() || !_isAppInForeground) {
+    await updateSyncOptions();  // <-- This was still running in background!
+    return;
+}
+```
+
+### Solution
+
+Removed the `await updateSyncOptions()` call when in background:
+
+```dart
+// After fix
+if (!await uiSettingsManager.getClientModeEnabled() || !_isAppInForeground) {
+    return;  // Do nothing in background - no scanning, no sync options
+}
+```
+
+### Behavior After Both Fixes
+
+| State | Behavior |
+|-------|----------|
+| Foreground + Client Mode | Scans every 10 seconds (expected) |
+| Background + Client Mode | NO periodic scan at all |
+| Background + Scheduled Sync | Still works (WorkManager) |
+| Background + App Sync | Still works (Accessibility) |
+
+### Files Modified
+
+- `lib/main.dart:1000-1003` (updateRecommendedAction function)
 
 ---
 
