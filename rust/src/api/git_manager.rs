@@ -2464,7 +2464,11 @@ fn push_changes_priv(
                 while let Some(op) = rebase.next() {
                     let commit_id = swl!(op)?.id();
                     let commit = swl!(repo.find_commit(commit_id))?;
-                    swl!(rebase.commit(None, &commit.author(), None))?;
+                    match swl!(rebase.commit(None, &commit.author(), None)) {
+                        Ok(_) => {}
+                        Err(e) if e.code() == ErrorCode::Applied => continue,
+                        Err(e) => return Err(e),
+                    }
                 }
                 match rebase.finish(None) {
                     Ok(_) => {
@@ -2838,7 +2842,17 @@ pub async fn commit_changes(
             .signature()
             .or_else(|_| Signature::now(&author.0, &author.1)))?;
 
-        swl!(rebase.commit(None, &sig, None))?;
+        match swl!(rebase.commit(None, &sig, None)) {
+            Ok(_) => {}
+            Err(e) if e.code() == ErrorCode::Applied => {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PushToRepo,
+                    "First rebase commit already applied, continuing...".to_string(),
+                );
+            }
+            Err(e) => return Err(e),
+        }
 
         while let Some(op) = rebase.next() {
             let commit_id = swl!(op)?.id();
