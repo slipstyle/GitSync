@@ -2733,6 +2733,28 @@ pub async fn commit_changes(
     let repo = swl!(Repository::open(&path_string))?;
     set_author(&repo, &author);
 
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
+
+    match prune_corrupted_loose_objects(path_string.clone()).await {
+        Ok(_) => {}
+        Err(e) => {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Error pruning corrupted objects: {}", e.message()),
+            );
+        }
+    }
+
     if repo.state() == RepositoryState::Rebase
         || repo.state() == RepositoryState::RebaseMerge
     {
