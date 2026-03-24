@@ -2490,39 +2490,51 @@ fn push_changes_priv(
                 || repo.state() == RepositoryState::RebaseMerge
             {
                 let mut rebase = swl!(repo.open_rebase(None))?;
-                while let Some(op) = rebase.next() {
-                    let commit_id = swl!(op)?.id();
-                    let commit = swl!(repo.find_commit(commit_id))?;
-                    let author = commit.author();
-                    match swl!(rebase.commit(None, &author, None)) {
-                        Ok(_) => {}
-                        Err(e) if e.code() == ErrorCode::Applied => continue,
-                        Err(e) => return Err(e),
+
+                // If we're in detached HEAD state, abort the rebase instead of trying to continue
+                if repo.head_detached().unwrap_or(false) {
+                    _log(
+                        Arc::clone(&log_callback),
+                        LogType::PushToRepo,
+                        "Detached HEAD during rebase - aborting rebase".to_string(),
+                    );
+                    swl!(rebase.abort())?;
+                    swl!(repo.cleanup_state())?;
+                } else {
+                    while let Some(op) = rebase.next() {
+                        let commit_id = swl!(op)?.id();
+                        let commit = swl!(repo.find_commit(commit_id))?;
+                        let author = commit.author();
+                        match swl!(rebase.commit(None, &author, None)) {
+                            Ok(_) => {}
+                            Err(e) if e.code() == ErrorCode::Applied => continue,
+                            Err(e) => return Err(e),
+                        }
                     }
-                }
-                match rebase.finish(None) {
-                    Ok(_) => {
-                        return Ok(Some(true));
-                    }
-                    Err(e)
-                        if e.code() == ErrorCode::Modified || e.code() == ErrorCode::Unmerged =>
-                    {
-                        swl!(rebase.abort())?;
-                    }
-                    Err(e) => {
-                        _log(
-                            Arc::clone(&log_callback),
-                            LogType::PushToRepo,
-                            format!("{:?}", e.code()),
-                        );
-                        _log(
-                            Arc::clone(&log_callback),
-                            LogType::PushToRepo,
-                            (e.code() == ErrorCode::Unmerged).to_string(),
-                        );
-                        return Err(e).map_err(|e| {
-                            git2::Error::from_str(&format!("{} (at line {})", e.message(), line!()))
-                        });
+                    match rebase.finish(None) {
+                        Ok(_) => {
+                            return Ok(Some(true));
+                        }
+                        Err(e)
+                            if e.code() == ErrorCode::Modified || e.code() == ErrorCode::Unmerged =>
+                        {
+                            swl!(rebase.abort())?;
+                        }
+                        Err(e) => {
+                            _log(
+                                Arc::clone(&log_callback),
+                                LogType::PushToRepo,
+                                format!("{:?}", e.code()),
+                            );
+                            _log(
+                                Arc::clone(&log_callback),
+                                LogType::PushToRepo,
+                                (e.code() == ErrorCode::Unmerged).to_string(),
+                            );
+                            return Err(e).map_err(|e| {
+                                git2::Error::from_str(&format!("{} (at line {})", e.message(), line!()))
+                            });
+                        }
                     }
                 }
             }
@@ -2880,6 +2892,20 @@ pub async fn commit_changes(
         );
 
         let mut rebase = swl!(repo.open_rebase(None))?;
+
+        // If we're in detached HEAD state, abort the rebase instead of trying to continue
+        // This prevents "this patch has already been applied" errors in broken state
+        if repo.head_detached().unwrap_or(false) {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::PushToRepo,
+                "Detached HEAD during rebase - aborting rebase".to_string(),
+            );
+            swl!(rebase.abort())?;
+            swl!(repo.cleanup_state())?;
+            return Err(git2::Error::from_str("Detached HEAD during rebase - aborted. Please retry sync."));
+        }
+
         let sig = swl!(repo
             .signature()
             .or_else(|_| Signature::now(&author.0, &author.1)))?;
