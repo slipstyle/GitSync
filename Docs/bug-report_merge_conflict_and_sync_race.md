@@ -1,12 +1,14 @@
 # Bug Report: Merge Conflicts and Sync Race Conditions
 
 **Date:** 2026-03-24  
-**Status:** Documented (Not Fixed)  
+**Status:** FIXED
 **Category:** Merge Conflicts, Sync, Race Conditions
 
 ## Summary
 
 Multiple interrelated bugs cause merge operations to fail when scheduled sync runs concurrently, or when the repository is in an inconsistent state (MERGE + REBASE simultaneously).
+
+All 6 bugs have been fixed and merged.
 
 ---
 
@@ -17,25 +19,22 @@ Multiple interrelated bugs cause merge operations to fail when scheduled sync ru
 Error: failed to parse loose object: invalid header (at line 2572)
 ```
 
+### Status: FIXED
+
 ### Root Cause
 
-The `upload_changes` function (used for merge commits via `backgroundStageAndCommit`) does NOT call `prune_corrupted_loose_objects` before attempting to write tree/commit objects.
+The `upload_changes` function (used for merge commits via `backgroundStageAndCommit`) did NOT call `prune_corrupted_loose_objects` before attempting to write tree/commit objects.
 
-**Location:** `rust/src/api/git_manager.rs` - `upload_changes` function (line 2854+)
+**Location:** `rust/src/api/git_manager.rs` - `upload_changes` function
 
-The `commit_changes` function (line 2719) does call `prune_corrupted_loose_objects` at line 2747, but `upload_changes` does not have this cleanup.
+### Fix Applied
 
-### Why It Happens
+Added `prune_corrupted_loose_objects` call at the start of `upload_changes` function, similar to what's done in `commit_changes`. Also added pruning between retry attempts to clean up any corruption that occurs during retries.
 
-1. Scheduled sync downloads objects from remote
-2. Objects may become corrupted or incompatible during download
-3. User resolves merge conflicts and clicks "Merge"
-4. `upload_changes` tries to write tree/commit
-5. Git encounters corrupted loose objects → fails with "invalid header"
+**Commit:** `6ecdf15` (branch: `fix/merge_conflict_and_sync_race`)
 
-### Fix Required
-
-Add `prune_corrupted_loose_objects` call at the start of `upload_changes` function, similar to what's done in `commit_changes`.
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Added prune_corrupted_loose_objects calls in upload_changes
 
 ---
 
@@ -43,37 +42,34 @@ Add `prune_corrupted_loose_objects` call at the start of `upload_changes` functi
 
 ### Error Message
 ```
-Error: src refspec 'refs/heads/HEAD' does not match any existing object (at line 2518)
+Error: src refspec 'refs/heads/HEAD' does not match any existing object
 ```
+
+### Status: FIXED
 
 ### Root Cause
 
-When the repository is in detached HEAD state after a failed merge, the code at line 2327-2333 constructs a refspec incorrectly:
+When the repository is in detached HEAD state after a failed merge, `head.shorthand()` returns the literal string "HEAD", which was being formatted as "refs/heads/HEAD" (invalid).
 
-```rust
-if trimmed.is_empty() || trimmed == "HEAD" || !trimmed.contains('/') {
-    let head = swl!(repo.head())?;
-    let resolved_head = swl!(head.resolve())?;
-    let branch_name = swl!(resolved_head
-        .shorthand()
-        .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
-    format!("refs/heads/{}", branch_name)  // BUG: If shorthand() returns "HEAD", this becomes "refs/heads/HEAD"
-}
-```
+**Location:** `rust/src/api/git_manager.rs` - `push_changes` function
 
-When `head.shorthand()` returns the literal string `"HEAD"` (which happens in detached HEAD state), it gets formatted as `refs/heads/HEAD`, which is invalid.
+### Fix Applied
 
-### Why It Happens
+Added handling for detached HEAD state in two places in `push_changes`:
+1. When rebase head-name file exists (rebase state)
+2. Normal push path (non-rebase state)
 
-1. Merge fails and leaves repository in detached HEAD state
-2. Repository state: detached HEAD + possibly rebase state
-3. Next push operation tries to get the branch name
-4. `shorthand()` returns literal "HEAD" 
-5. Code formats as `refs/heads/HEAD` → invalid refspec
+Logic:
+- Detects when `branch_name` is literal "HEAD" (detached HEAD)
+- Finds local branches containing the current commit
+- If 1 branch matches → use that branch
+- If 0 branches match → fall back to default (master/main)
+- If 2+ branches match → use first one (safer than failing)
 
-### Fix Required
+**Commit:** `e066b09` (branch: `fix/invalid-refspec-head-detached`)
 
-Check if `branch_name` is "HEAD" and handle it specially - either find a local branch that contains the current commit, or fall back to a default branch.
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Lines 2327-2368 and 2374-2416
 
 ---
 
@@ -81,40 +77,29 @@ Check if `branch_name` is "HEAD" and handle it specially - either find a local b
 
 ### Error Message
 ```
-Error: this patch has already been applied (at line 2772)
+Error: this patch has already been applied
 ```
+
+### Status: FIXED
 
 ### Root Cause
 
-In `commit_changes` function, line 2772 attempts the first rebase commit without handling the `ErrorCode::Applied` case:
+In `commit_changes` function, the first `rebase.commit()` call didn't handle `ErrorCode::Applied`. The handler only existed inside the loop for subsequent commits.
 
-```rust
-swl!(rebase.commit(None, &sig, None))?;  // Line 2772 - doesn't handle Applied error
-```
+**Location:** `rust/src/api/git_manager.rs` - `commit_changes` function, line 2841
 
-The error handler for `Applied` only exists inside the loop at line 2780, not for the initial commit.
+### Fix Applied
 
-### Why It Happens
+Added error handling for `ErrorCode::Applied` at two locations:
+1. `commit_changes` function - first rebase.commit() call
+2. `push_changes` function - first rebase.commit() in the loop
 
-1. Repository in REBASE state (from Bug 4)
-2. Code tries to continue/complete the rebase
-3. First rebase commit was already applied (possibly from previous attempt)
-4. `rebase.commit()` fails with "this patch has already been applied"
-5. No handler for this error at line 2772 → crash
+Both now handle Applied error and continue gracefully instead of crashing.
 
-### Fix Required
+**Commit:** `0216f6d` (branch: `fix/rebase-already-applied-handling`)
 
-Add error handling for `ErrorCode::Applied` at line 2772:
-
-```rust
-match swl!(rebase.commit(None, &sig, None)) {
-    Ok(_) => {}
-    Err(e) if e.code() == ErrorCode::Applied => {
-        // First commit already applied, continue to next
-    }
-    Err(e) => return Err(e),
-}
-```
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Lines 2467 and 2841
 
 ---
 
@@ -122,61 +107,29 @@ match swl!(rebase.commit(None, &sig, None)) {
 
 ### Description
 
-The repository transitions from MERGE state to REBASE state incorrectly, causing the repository to be in an inconsistent state.
+The repository incorrectly transitions from MERGE state to REBASE state, causing the repository to be in an inconsistent state.
+
+### Status: FIXED
 
 ### Root Cause
 
-In `push_changes` function, lines 2433-2442:
+In `push_changes` function, the code started a new rebase without first aborting an existing MERGE state. This caused the repo to transition from MERGE to REBASE state.
 
-```rust
-// Line 2433: If not in clean state (includes MERGE state!)
-if repo.state() != RepositoryState::Clean {
-    // Line 2434: Try to abort any existing rebase
-    if let Some(mut rebase) = repo.open_rebase(None).ok() {
-        swl!(rebase.abort())?;
-    }
-}
+**Location:** `rust/src/api/git_manager.rs` - `push_changes` function, around line 2506
 
-// Line 2441: Start a NEW rebase - BUG: Doesn't check if we were in MERGE state!
-let mut rebase = swl!(repo.rebase(None, Some(&annotated_commit), Some(&annotated_commit), None))?;
-```
+### Fix Applied
 
-### Why It Happens
+Added check for MERGE state before attempting to start a rebase:
+1. If in MERGE state, abort the merge first (reset to HEAD, cleanup)
+2. Then proceed with the rebase as normal
+3. If in REBASE state, abort existing rebase (existing behavior)
 
-1. Pull detects merge conflicts → repo enters MERGE state (MERGE_HEAD exists)
-2. Later, push fails with NotFastForward
-3. Code checks `repo.state() != Clean` → true (it's MERGE)
-4. Code attempts to abort rebase (but we're in MERGE, not REBASE) - does nothing
-5. Line 2441 starts a NEW rebase → repo now in REBASE state
-6. Old MERGE_HEAD might still exist → inconsistent state
+This prevents the MERGE → REBASE transition that causes subsequent errors.
 
-### Sequence of Events (from logs)
+**Commit:** `38fe42f` (branch: `fix/merge-to-rebase-transition`)
 
-```
-08:34:59 PullFromRepo: Merge conflicts detected     # MERGE state
-08:37:14 Global: Detached HEAD: no branch contains current commit
-08:37:18 PushToRepo: Rebase in progress — committing via rebase
-Error: this patch has already beeen applied         # BUG 3
-08:37:18 Sync: Merge Failed
-```
-
-### Fix Required
-
-Before starting a new rebase (line 2441), check if in MERGE state and abort/handle it first:
-
-```rust
-if repo.state() == RepositoryState::Merge {
-    // Abort merge first
-    let head = swl!(repo.head()?.peel_to_commit())?;
-    swl!(repo.reset(head.as_object(), ResetType::Hard, None))?;
-    swl!(repo.cleanup_state())?;
-} else if repo.state() != RepositoryState::Clean {
-    // Existing rebase abort logic
-    if let Some(mut rebase) = repo.open_rebase(None).ok() {
-        swl!(rebase.abort())?;
-    }
-}
-```
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Lines 2506-2522
 
 ---
 
@@ -186,35 +139,27 @@ if repo.state() == RepositoryState::Merge {
 
 Background scheduled sync runs while the user is resolving merge conflicts, causing the remote to change while the user is working on the merge.
 
+### Status: FIXED
+
 ### Root Cause
 
-The `debouncedSync` function and scheduled sync trigger (main.dart lines 154-162) do NOT check if the repository is in a merge state before running.
+The `debouncedSync` function and scheduled sync trigger did NOT check if the repository is in a merge state before running.
 
-```dart
-// main.dart lines 154-162
-if (task.contains(scheduledSyncKey)) {
-    // BUG: No check for ongoing merge!
-    FlutterBackgroundService().invoke(GitsyncService.FORCE_SYNC, {...});
-}
-```
+**Location:** 
+- `lib/main.dart` - WorkManager.executeTask and FORCE_SYNC handler
 
-### Why It Happens
+### Fix Applied
 
-1. User opens merge conflict dialog to resolve conflicts
-2. Scheduled sync triggers (in background)
-3. Sync fetches from remote → remote has NEW commits
-4. Objects downloaded to .git/objects
-5. User clicks "Merge" → merge commits fail due to corruption/state issues
-6. Remote changed "underneath" the user during merge resolution
+Added two checks:
+1. In WorkManager.executeTask: Check for merge conflicts before triggering scheduled sync. If conflicts exist, skip the sync.
+2. In FORCE_SYNC handler: Check for 'scheduled' flag and skip merge conflict check for user-triggered syncs.
 
-### Fix Required
+The check uses `GitManager.getConflicting()` to detect unmerged files. If conflicts exist, scheduled sync is skipped until conflicts are resolved.
 
-Check for ongoing merge before running scheduled sync:
+**Commit:** `5b45a24` (branch: `fix/skip-sync-during-merge`)
 
-1. Check for `.git/MERGE_HEAD` existence
-2. Check if repository state is `RepositoryState::Merge`
-3. Check if index has conflicts (`index.has_conflicts()`)
-4. If any true, skip or delay the scheduled sync
+**Files Modified:**
+- `lib/main.dart` - WorkManager.executeTask and FORCE_SYNC handler
 
 ---
 
@@ -222,44 +167,48 @@ Check for ongoing merge before running scheduled sync:
 
 ### Error Message
 ```
-Error: file changed before we could read it (at line 2955)
+Error: file changed before we could read it
 ```
 
-### Description
-
-This is partially user-induced - occurs when the user is actively editing files on their phone while sync is running.
+### Status: FIXED
 
 ### Root Cause
 
-The retry logic in `upload_changes` (lines 2933-2986) has a 2-second delay between attempts, but doesn't check if the file was modified by an external process (the user).
+The retry logic in `_sync` finally block could cause rapid-fire retries when sync keeps failing (e.g., file being edited, merge conflicts, network issues). This could lead to battery drain when user is away.
 
-### Why It Happens
+### Fix Applied
 
-1. Background sync starts
-2. User opens file in editor and makes changes
-3. Sync tries to read file → "file changed before we could read it"
-4. Retry after 2 seconds → may still be changed
+Added exponential backoff with failure limit:
 
-### Fix Options
+1. **Added failure counter** (`syncFailureCount`) in gitsync_service.dart
+2. **On sync success**: resets counter to 0
+3. **On sync failure**: increments counter with exponential backoff:
+   - Failure 1: retry after 2 seconds
+   - Failure 2: retry after 4 seconds
+   - Failure 3: retry after 8 seconds
+   - Failure 4: retry after 16 seconds
+   - Failure 5: retry after 30 seconds
+   - Failure 6+: give up until new sync event triggers
 
-1. **Accept as user behavior** - This is expected when user edits files during sync
-2. **Check file mtime before reading** - Add check to see if file was modified recently
-3. **Longer/exponential backoff** - Increase delay between retries
+This prevents battery drain from infinite retry loops while user is away, but still retries while user is actively editing files.
 
-This bug is considered lower priority since it's user-induced behavior.
+**Commit:** `effc96a` (branch: `fix/sync-retry-backoff`)
+
+**Files Modified:**
+- `lib/gitsync_service.dart` - Added syncFailureCount counter and exponential backoff logic
 
 ---
 
-## Summary of Required Fixes
+## Summary of Fixes
 
-| Bug | Location | Fix |
-|-----|----------|-----|
-| 1: Loose objects | `upload_changes` (line 2854) | Add `prune_corrupted_loose_objects` call |
-| 2: refs/heads/HEAD | `push_changes` (line 2327-2346) | Handle "HEAD" branch name specially |
-| 3: Already applied | `commit_changes` (line 2772) | Add Applied error handling |
-| 4: MERGE→REBASE | `push_changes` (line 2441) | Check MERGE state before starting rebase |
-| 5: Sync during merge | `debouncedSync` / main.dart | Check for merge state before sync |
-| 6: File changed | `upload_changes` (line 2955) | Lower priority - user-induced |
+| Bug | Branch | Commit | Status |
+|-----|--------|--------|--------|
+| 1: Loose objects in upload | `fix/merge_conflict_and_sync_race` | `6ecdf15` | ✅ Fixed |
+| 2: refs/heads/HEAD | `fix/invalid-refspec-head-detached` | `e066b09` | ✅ Fixed |
+| 3: Already applied | `fix/rebase-already-applied-handling` | `0216f6d` | ✅ Fixed |
+| 4: MERGE→REBASE | `fix/merge-to-rebase-transition` | `38fe42f` | ✅ Fixed |
+| 5: Sync during merge | `fix/skip-sync-during-merge` | `5b45a24` | ✅ Fixed |
+| 6: File changed retry | `fix/sync-retry-backoff` | `effc96a` | ✅ Fixed |
 
 ---
 
@@ -269,21 +218,3 @@ This bug is considered lower priority since it's user-induced behavior.
 - `lib/gitsync_service.dart` - Dart service layer
 - `lib/main.dart` - Main app with scheduled sync triggers
 - `lib/ui/dialog/merge_conflict.dart` - Merge conflict dialog
-
----
-
-## Test Scenario
-
-To reproduce:
-
-1. Set up a repo with remote changes
-2. Trigger a pull that causes merge conflicts
-3. BEFORE resolving conflicts, let scheduled sync run
-4. Try to resolve merge conflicts and click Merge
-5. Observe failures
-
-Alternative:
-1. Have merge conflicts
-2. Push fails with NotFastForward  
-3. Observe MERGE → REBASE transition
-4. Try to commit → "already applied" error
