@@ -211,15 +211,15 @@ This caused user-initiated merge resolution to fail when the repo was in detache
 
 ### Fix Applied
 
-Removed the detached HEAD check from `commit_changes` function (which handles user-initiated merges) while keeping it in `push_changes` function (which handles sync operations).
+Changed detached HEAD handling in `commit_changes` function to log only instead of aborting. The `ensure_head_attached()` function is still called, but when it detects detached HEAD, it only logs the error and continues instead of returning an error that would abort the operation.
 
 - `push_changes`: Aborts rebase when in detached HEAD during sync
-- `commit_changes`: Does NOT abort rebase (allows user to resolve merge conflicts)
+- `commit_changes`: Logs detached HEAD but does NOT abort (allows user to resolve merge conflicts)
 
 **Commit:** `6bc87e7` (branch: `fix/abort-rebase-sync-only`)
 
 **Files Modified:**
-- `rust/src/api/git_manager.rs` - Removed detached HEAD check from commit_changes (line ~2896)
+- `rust/src/api/git_manager.rs` - Changed detached HEAD handling in commit_changes to log only (line ~2863)
 
 ---
 

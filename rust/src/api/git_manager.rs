@@ -2225,6 +2225,23 @@ fn ensure_head_attached(repo: &Repository) -> Result<bool, git2::Error> {
     }
 }
 
+fn reattach_detached_head(
+    repo: &Repository,
+    log_callback: &Arc<impl Fn(LogType, String) -> DartFnFuture<()> + Send + Sync + 'static>,
+) -> Result<(), git2::Error> {
+    if repo.head_detached().unwrap_or(false) {
+        if let Some(branch_name) = get_branch_name_priv(repo) {
+            swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+            _log(
+                Arc::clone(log_callback),
+                LogType::PushToRepo,
+                format!("Reattached HEAD to branch: {}", branch_name),
+            );
+        }
+    }
+    Ok(())
+}
+
 pub async fn push_changes(
     path_string: &String,
     remote_name: &String,
@@ -2926,16 +2943,7 @@ pub async fn commit_changes(
                         LogType::PushToRepo,
                         "Subsequent rebase step has conflicts — leaving rebase in progress".to_string(),
                     );
-                    if repo.head_detached().unwrap_or(false) {
-                        if let Some(branch_name) = get_branch_name_priv(&repo) {
-                            swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
-                            _log(
-                                Arc::clone(&log_callback),
-                                LogType::PushToRepo,
-                                format!("Reattached HEAD to branch: {}", branch_name),
-                            );
-                        }
-                    }
+                    reattach_detached_head(&repo, &log_callback)?;
                     return Ok(());
                 }
                 Err(e) => return Err(e),
@@ -2950,16 +2958,7 @@ pub async fn commit_changes(
             "Rebase finished successfully".to_string(),
         );
 
-        if repo.head_detached().unwrap_or(false) {
-            if let Some(branch_name) = get_branch_name_priv(&repo) {
-                swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
-                _log(
-                    Arc::clone(&log_callback),
-                    LogType::PushToRepo,
-                    format!("Reattached HEAD to branch: {}", branch_name),
-                );
-            }
-        }
+        reattach_detached_head(&repo, &log_callback)?;
 
         return Ok(());
     }
