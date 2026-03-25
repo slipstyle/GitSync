@@ -2231,7 +2231,14 @@ fn reattach_detached_head(
 ) -> Result<(), git2::Error> {
     if repo.head_detached().unwrap_or(false) {
         if let Some(branch_name) = get_branch_name_priv(repo) {
-            swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+            if let Err(e) = repo.set_head(&format!("refs/heads/{}", branch_name)) {
+                _log(
+                    Arc::clone(log_callback),
+                    LogType::PushToRepo,
+                    format!("Failed to reattach HEAD: {}", e.message()),
+                );
+                return Err(e);
+            }
             _log(
                 Arc::clone(log_callback),
                 LogType::PushToRepo,
