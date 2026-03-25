@@ -223,6 +223,58 @@ Removed the detached HEAD check from `commit_changes` function (which handles us
 
 ---
 
+## Bug 7: Detached HEAD After Rebase
+
+### Status: FIXED
+
+### Error Message
+
+User sees "unable to sync while in detached HEAD state" even though sync completed successfully.
+
+### Root Cause
+
+After the rebase block in `commit_changes`, the code returned without ensuring HEAD was attached to a branch. This happened in two scenarios:
+1. After successful rebase completion (`rebase.finish()`)
+2. When subsequent rebase steps have conflicts (returns early with `Ok(())`)
+
+The rebase itself completed successfully, but HEAD was left pointing to the rebased commit without being attached to a branch.
+
+### How It Works
+
+When there are multiple local commits being rebased:
+1. First commit rebases successfully
+2. Second commit has conflicts → returns early with `Ok(())`, leaving index/working directory intact
+3. UI shows merge conflict dialog → user resolves
+4. Next sync continues rebase
+5. If successful rebase at end → `rebase.finish()` succeeds but HEAD remains detached
+
+The fix ensures HEAD is reattached to the branch after the rebase block completes.
+
+### Fix Applied
+
+Added code after the rebase block to reattach HEAD to the branch:
+
+```rust
+if repo.head_detached().unwrap_or(false) {
+    if let Some(branch_name) = get_branch_name_priv(&repo) {
+        swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+        _log(..., format!("Reattached HEAD to branch: {}", branch_name));
+    }
+}
+```
+
+This fix is applied in two locations:
+1. After successful rebase completion (line ~2943)
+2. After conflict on subsequent rebase step (line ~2929)
+
+**Branch:** `fix/rebase-cleanup-state`
+
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Lines 2935-2960 (after rebase.finish)
+- `rust/src/api/git_manager.rs` - Lines 2923-2940 (after conflict on subsequent step)
+
+---
+
 ## Summary of Fixes
 
 | Bug | Branch | Commit | Status |
@@ -233,6 +285,7 @@ Removed the detached HEAD check from `commit_changes` function (which handles us
 | 4: MERGE→REBASE | `fix/merge-to-rebase-transition` | `38fe42f` | ✅ Fixed |
 | 5: Sync during merge | `fix/skip-sync-during-merge` | `5b45a24` | ✅ Fixed |
 | 6: File changed retry | `fix/sync-retry-backoff` | `effc96a` | ✅ Fixed |
+| 7: Detached HEAD after rebase | `fix/rebase-cleanup-state` | (pending) | ✅ Fixed |
 
 ---
 

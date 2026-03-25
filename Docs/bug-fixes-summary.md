@@ -260,6 +260,30 @@ This prevents battery drain from infinite retry loops while user is away, but st
 
 ---
 
+### 14. Detached HEAD After Rebase
+
+**Issue:** Repository ends up in detached HEAD state after rebase operations, either successful or with conflicts.
+
+**Root Cause:** After the rebase block in `commit_changes`, the code returned without ensuring HEAD was attached to a branch. This happened in two scenarios:
+1. After successful rebase completion (`rebase.finish()`)
+2. When subsequent rebase steps have conflicts (returns early with `Ok(())`)
+
+**Fix:** Added code after the rebase block to reattach HEAD to the branch:
+- Checks if `repo.head_detached()` is true
+- Uses `get_branch_name_priv()` to get the current branch name
+- Calls `repo.set_head()` to reattach HEAD to `refs/heads/{branch_name}`
+
+This ensures HEAD is always reattached after the rebase block completes or returns early with conflicts.
+
+**Branch:** `fix/rebase-cleanup-state`  
+**Commit:** (current branch, not yet merged)
+
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Lines 2935-2960 (after rebase.finish)
+- `rust/src/api/git_manager.rs` - Lines 2923-2940 (after conflict on subsequent step)
+
+---
+
 ## All Fix Branches
 
 | Bug # | Description | Branch | Commit |
@@ -277,6 +301,7 @@ This prevents battery drain from infinite retry loops while user is away, but st
 | 11 | Sync during merge | `fix/skip-sync-during-merge` | `5b45a24` |
 | 12 | Sync retry backoff | `fix/sync-retry-backoff` | `effc96a` |
 | 13 | Abort rebase sync only | `fix/abort-rebase-sync-only` | `6bc87e7` |
+| 14 | Detached HEAD after rebase | `fix/rebase-cleanup-state` | (pending) |
 
 ---
 
@@ -292,6 +317,7 @@ This prevents battery drain from infinite retry loops while user is away, but st
 - [x] Scheduled sync skipped during active merge conflict
 - [x] MERGE state handled correctly before rebase
 - [x] Sync retry with exponential backoff (prevents battery drain)
+- [x] Detached HEAD after rebase (successful or with conflicts)
 
 ## Log Patterns to Watch For
 
@@ -307,4 +333,131 @@ This prevents battery drain from infinite retry loops while user is away, but st
 "First rebase commit already applied"
 "Sync failed, retrying in"
 "Sync failed too many times, giving up"
+"Reattached HEAD to branch:"
+"Subsequent rebase step has conflicts"
+```
+
+---
+
+## Code Review: Redundancies and Improvements
+
+### Redundant/Overlapping Fixes
+
+#### 1. Detached HEAD Handling (Bug #4 vs #14)
+
+**Finding:** Bug #14 adds explicit `head_detached()` checks AFTER rebase operations in `commit_changes` (lines 2929-2937 and 2953-2961) that are redundant with Bug #4's `ensure_head_attached()` function.
+
+- `ensure_head_attached()` is called at line 2863 (START of commit_changes)
+- Additional reattach code added at lines 2929-2937 and 2953-2961
+
+**Assessment:** This is "belt and suspenders" defensive programming. While redundant, it provides extra safety and is low risk.
+
+---
+
+#### 2. refs/heads/HEAD Handling (Bug #4 vs #8)
+
+**Finding:** Bug #8 adds specific handling for the case where `head.shorthand()` returns literal "HEAD" in push_changes.
+
+**Assessment:** These are complementary, not redundant. Bug #8 handles the specific rebase head-name path more efficiently, while Bug #4 provides a general fallback.
+
+---
+
+### Issues in Existing Fixes
+
+#### 3. Bug #13 Description is Misleading
+
+**File:** `bug-report_merge_conflict_and_sync_race.md`
+
+**Issue:** The bug report states "Removed detached HEAD check from commit_changes" but the code at line 2863 still calls `ensure_head_attached()`. The function IS still called, but it only logs the error instead of returning an error.
+
+**Fix needed:** Update the bug report to say: "Changed detached HEAD handling in commit_changes to log only instead of aborting"
+
+---
+
+#### 4. Exponential Backoff Edge Case
+
+**File:** `lib/gitsync_service.dart:310-336`
+
+**Issue:** After a successful sync, `syncFailureCount` is reset to 0 (line 310). If `isScheduled` is still true at that point, the logic at lines 332-336 triggers immediate re-sync:
+
+```dart
+} else if (isScheduled) {
+    Logger.gmLog(type: LogType.Sync, "Scheduled Sync Starting");
+    isScheduled = false;
+    debouncedSync(repomanRepoindex);
+}
+```
+
+**Assessment:** May cause unexpected behavior. Recommend adding a comment explaining this is intentional.
+
+---
+
+#### 5. Duplicate Rust Code
+
+**File:** `rust/src/api/git_manager.rs`
+
+**Issue:** Lines 2929-2937 and 2953-2961 contain identical code blocks for reattaching HEAD:
+
+```rust
+if repo.head_detached().unwrap_or(false) {
+    if let Some(branch_name) = get_branch_name_priv(&repo) {
+        swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+        _log(...);
+    }
+}
+```
+
+**Recommendation:** Extract to a helper function for maintainability.
+
+---
+
+### Unaddressed Issues
+
+#### 6. Detached HEAD Dropdown Data Loss (Not Fixed)
+
+**Documented in:** `bug-report_detached-head-dropdown-data-loss.md`
+
+**Status:** Still a known issue - not fixed
+
+**Impact:** When users select a branch from the dropdown to recover from detached HEAD:
+- Working directory files are overwritten
+- Local commits become orphaned
+- No warning is shown to users
+
+---
+
+#### 7. Sync During Active Merge (Partial Fix)
+
+**Bug #11:** The fix checks for merge conflicts only when `isScheduled` is true. User-triggered syncs during active merge conflict may still cause issues.
+
+---
+
+### Recommended Improvements
+
+1. **High Priority:** Update bug report #13 to accurately describe the behavior change
+2. **Medium Priority:** Address the unfixed Detached HEAD dropdown data loss issue
+3. **Low Priority:** Refactor duplicate code into helper functions
+
+---
+
+### Bug Fix Dependency Graph
+
+```
+Bug #1: Malformed Rebase Refspec
+    └── Bug #4: Detached HEAD Auto-Recovery (uses similar branch detection)
+
+Bug #2: Corrupted Loose Objects
+    └── Bug #7: Loose Objects in upload_changes (extends fix)
+    └── Bug #5: Commit Corruption (adds cleanup)
+
+Bug #4: Detached HEAD Auto-Recovery
+    ├── Bug #8: refs/heads/HEAD (complementary)
+    ├── Bug #13: Abort Rebase Only in Sync (modifies behavior)
+    └── Bug #14: Detached HEAD After Rebase (overlapping/redundant)
+
+Bug #6: Background Scanning (independent)
+Bug #9: Already Applied (independent)
+Bug #10: MERGE → REBASE (independent)
+Bug #11: Sync During Merge (independent)
+Bug #12: Sync Retry Backoff (independent)
 ```

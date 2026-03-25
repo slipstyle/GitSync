@@ -2926,6 +2926,16 @@ pub async fn commit_changes(
                         LogType::PushToRepo,
                         "Subsequent rebase step has conflicts — leaving rebase in progress".to_string(),
                     );
+                    if repo.head_detached().unwrap_or(false) {
+                        if let Some(branch_name) = get_branch_name_priv(&repo) {
+                            swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+                            _log(
+                                Arc::clone(&log_callback),
+                                LogType::PushToRepo,
+                                format!("Reattached HEAD to branch: {}", branch_name),
+                            );
+                        }
+                    }
                     return Ok(());
                 }
                 Err(e) => return Err(e),
@@ -2939,6 +2949,17 @@ pub async fn commit_changes(
             LogType::PushToRepo,
             "Rebase finished successfully".to_string(),
         );
+
+        if repo.head_detached().unwrap_or(false) {
+            if let Some(branch_name) = get_branch_name_priv(&repo) {
+                swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PushToRepo,
+                    format!("Reattached HEAD to branch: {}", branch_name),
+                );
+            }
+        }
 
         return Ok(());
     }
