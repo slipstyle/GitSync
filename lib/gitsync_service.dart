@@ -399,7 +399,13 @@ class GitsyncService {
           !enabledInputMethods.contains(packageName)) {
         Logger.gmLog(type: LogType.AccessibilityService, "Application Closed $packageName");
         if (syncClosed) {
-          debouncedSync(index);
+          final conflictingFiles = await GitManager.getConflicting(index, 3);
+          if (conflictingFiles.isNotEmpty) {
+            Logger.gmLog(type: LogType.Sync, "App sync skipped: merge conflicts detected");
+            await sendMergeConflictNotification();
+          } else {
+            debouncedSync(index);
+          }
         }
       }
 
@@ -408,7 +414,13 @@ class GitsyncService {
           !enabledInputMethods.contains(packageName)) {
         Logger.gmLog(type: LogType.AccessibilityService, "Application Opened $packageName");
         if (syncOpened) {
-          debouncedSync(index);
+          final conflictingFiles = await GitManager.getConflicting(index, 3);
+          if (conflictingFiles.isNotEmpty) {
+            Logger.gmLog(type: LogType.Sync, "App sync skipped: merge conflicts detected");
+            await sendMergeConflictNotification();
+          } else {
+            debouncedSync(index);
+          }
         }
       }
     }

@@ -195,19 +195,26 @@ Logic:
 
 **Description:** Background sync runs while user is resolving merge conflicts, causing remote to change during merge.
 
-**Root Cause:** `debouncedSync` and scheduled sync don't check for ongoing merge before running.
+**Root Cause:** `debouncedSync` doesn't check for ongoing merge before running.
 
-**Fix:** Added two checks:
-1. In WorkManager.executeTask: Check for merge conflicts before triggering scheduled sync
-2. In FORCE_SYNC handler: Check for 'scheduled' flag and skip merge conflict check for user-triggered syncs
+**Fix (Initial):** Added check in WorkManager.executeTask for scheduled syncs.
 
-Uses `GitManager.getConflicting()` to detect unmerged files. If conflicts exist, scheduled sync is skipped until conflicts are resolved.
+**Fix (Complete):** Extended conflict checking to ALL sync triggers:
+1. App Sync (accessibility service): Check for conflicts before syncing on app open/close
+2. Widget Sync: Check for conflicts before syncing via widget
+3. Manual Sync: Check for conflicts before syncing via "Sync Now" button/shortcut
+4. Scheduled Sync: Already had check (from initial fix)
 
-**Branch:** `fix/skip-sync-during-merge`  
-**Commit:** `5b45a24`
+When conflicts are detected, sync is skipped and the merge conflict notification is shown to alert the user.
+
+Uses `GitManager.getConflicting()` to detect unmerged files. If conflicts exist, sync is skipped until conflicts are resolved.
+
+**Branch:** `fix/skip-sync-during-merge` / `fix/sync-during-merge-complete`  
+**Commit:** `5b45a24` (initial) / new commit (complete fix)
 
 **Files Modified:**
-- `lib/main.dart` - WorkManager.executeTask and FORCE_SYNC handler
+- `lib/main.dart` - FORCE_SYNC handler (consolidated conflict check)
+- `lib/gitsync_service.dart` - accessibilityEvent() (App Sync conflict check)
 
 **See:** `bug-report_merge_conflict_and_sync_race.md`
 
@@ -426,17 +433,31 @@ if repo.head_detached().unwrap_or(false) {
 
 ---
 
-#### 7. Sync During Active Merge (Partial Fix)
+#### 7. Sync During Active Merge (COMPLETE FIX)
 
-**Bug #11:** The fix checks for merge conflicts only when `isScheduled` is true. User-triggered syncs during active merge conflict may still cause issues.
+**Bug #11:** Previously only checked for merge conflicts on scheduled syncs. User-triggered syncs (App Sync, Widget, Manual) could run during active merge conflicts.
+
+**Status:** Now FIXED - added conflict checking to all sync triggers:
+- App Sync (accessibility service)
+- Widget sync
+- Manual sync (button/shortcut)
+- Scheduled sync (already had check)
 
 ---
 
 ### Recommended Improvements
 
-1. **High Priority:** Update bug report #13 to accurately describe the behavior change
-2. **Medium Priority:** Address the unfixed Detached HEAD dropdown data loss issue
-3. **Low Priority:** Refactor duplicate code into helper functions
+1. **High Priority:** Address the unfixed Detached HEAD dropdown data loss issue
+2. ~~Medium Priority: Update bug report #13 to accurately describe the behavior change~~ - DONE
+3. ~~Low Priority: Refactor duplicate code into helper functions~~ - DONE
+
+---
+
+### Recent Changes (Current Branch)
+
+- **refactor/reattach-head-helper:** Extracted `reattach_detached_head()` helper function, fixed misleading Bug #13 documentation
+- **refactor/add-error-logging:** Added error logging to `reattach_detached_head()` function
+- **fix/sync-during-merge-complete:** Extended merge conflict checking to ALL sync triggers (App Sync, Widget, Manual, Scheduled)
 
 ---
 

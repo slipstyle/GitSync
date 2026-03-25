@@ -489,26 +489,26 @@ void onServiceStart(ServiceInstance service) async {
     print(GitsyncService.FORCE_SYNC);
     final repoIndex = int.tryParse(event?[REPO_INDEX] ?? "null") ?? await repoManager.getInt(StorageKey.repoman_repoIndex);
 
-    // Check if this is a scheduled sync
-    // Don't skip for user-triggered syncs
+    // Check if this is a scheduled sync for logging purposes
     final isScheduledSync = event?["scheduled"] == true;
 
-    if (!isScheduledSync) {
-      gitSyncService.debouncedSync(repoIndex, true);
-      return;
-    }
-
-    // For scheduled syncs, check for merge conflicts
+    // Check for merge conflicts for ALL sync types (scheduled, widget, manual, shortcut)
+    bool hasConflicts = false;
     try {
       final conflictingFiles = await GitManager.getConflicting(repoIndex, 3);
-      if (conflictingFiles.isNotEmpty) {
-        // Skip scheduled sync if merge conflicts exist
-        return;
-      }
+      hasConflicts = conflictingFiles.isNotEmpty;
     } catch (e) {
       // If we can't check for conflicts, proceed with sync
     }
 
+    if (hasConflicts) {
+      final syncType = isScheduledSync ? "Scheduled" : "Manual";
+      Logger.gmLog(type: LogType.Sync, "$syncType sync skipped: merge conflicts detected");
+      await sendMergeConflictNotification();
+      return;
+    }
+
+    // No conflicts - proceed with sync
     gitSyncService.debouncedSync(repoIndex, true);
   });
 
