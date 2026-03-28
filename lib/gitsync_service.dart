@@ -94,6 +94,7 @@ class GitsyncService {
   );
   bool isScheduled = false;
   bool isSyncing = false;
+  int syncFailureCount = 0;
 
   Future<void> initialise(Function(ServiceInstance) onServiceStart, Function() callbackDispatcher) async {
     final service = FlutterBackgroundService();
@@ -234,6 +235,9 @@ class GitsyncService {
                 if (GitManager.lastOperationWasNetworkStall) {
                   await _displaySyncMessage(settingsManager, s.networkStallRetry);
                   _scheduleStallRetry(repomanRepoindex);
+                } else if (GitManager.lastOperationWasOidStale) {
+                  await _displaySyncMessage(settingsManager, "Remote changed during sync - will retry");
+                  _scheduleStallRetry(repomanRepoindex);
                 }
                 return;
               }
@@ -278,6 +282,9 @@ class GitsyncService {
                 if (GitManager.lastOperationWasNetworkStall) {
                   await _displaySyncMessage(settingsManager, s.networkStallRetry);
                   _scheduleStallRetry(repomanRepoindex);
+                } else if (GitManager.lastOperationWasOidStale) {
+                  await _displaySyncMessage(settingsManager, "Remote changed during sync - will retry");
+                  _scheduleStallRetry(repomanRepoindex);
                 }
                 return;
               }
@@ -305,14 +312,29 @@ class GitsyncService {
       if (!(pushResult == null || pullResult == null)) {
         Logger.dismissError(null);
         Logger.gmLog(type: LogType.Sync, "Sync Complete!");
+        syncFailureCount = 0;
+      } else {
+        syncFailureCount++;
       }
 
       await GitManager.getRecentCommits(3);
     } catch (e, st) {
       Logger.logError(LogType.SyncException, e, st);
+      syncFailureCount++;
     } finally {
       isSyncing = false;
-      if (isScheduled) {
+      if (isScheduled && syncFailureCount > 0 && syncFailureCount <= 5) {
+        final delays = [2, 4, 8, 16, 30];
+        final delaySeconds = delays[syncFailureCount - 1];
+        Logger.gmLog(type: LogType.Sync, "Sync failed, retrying in ${delaySeconds}s (attempt $syncFailureCount/5)");
+        await Future.delayed(Duration(seconds: delaySeconds));
+        isScheduled = false;
+        debouncedSync(repomanRepoindex);
+      } else if (isScheduled && syncFailureCount > 5) {
+        Logger.gmLog(type: LogType.Sync, "Sync failed too many times, giving up until new event");
+        isScheduled = false;
+        syncFailureCount = 0;
+      } else if (isScheduled) {
         Logger.gmLog(type: LogType.Sync, "Scheduled Sync Starting");
         isScheduled = false;
         debouncedSync(repomanRepoindex);

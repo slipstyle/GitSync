@@ -191,10 +191,23 @@ void callbackDispatcher() async {
         final int repoIndex =
             inputData?["repoIndex"] ?? int.tryParse(task.replaceAll(scheduledSyncKey, "")) ?? await repoManager.getInt(StorageKey.repoman_repoIndex);
 
+        // Check for merge conflicts before running scheduled sync
+        // This prevents remote from changing while user resolves merge conflicts
+        try {
+          final conflictingFiles = await GitManager.getConflicting(repoIndex, 3);
+          if (conflictingFiles.isNotEmpty) {
+            // Skip scheduled sync if merge conflicts exist
+            // User is actively resolving conflicts, don't interfere
+            return Future.value(true);
+          }
+        } catch (e) {
+          // If we can't check for conflicts, proceed with sync
+        }
+
         if (Platform.isIOS) {
           await gitSyncService.debouncedSync(repoIndex, true, true);
         } else {
-          FlutterBackgroundService().invoke(GitsyncService.FORCE_SYNC, {REPO_INDEX: "$repoIndex"});
+          FlutterBackgroundService().invoke(GitsyncService.FORCE_SYNC, {REPO_INDEX: "$repoIndex", "scheduled": true});
         }
 
         return Future.value(true);
@@ -564,7 +577,29 @@ void onServiceStart(ServiceInstance service) async {
 
   service.on(GitsyncService.FORCE_SYNC).listen((event) async {
     print(GitsyncService.FORCE_SYNC);
-    gitSyncService.debouncedSync(int.tryParse(event?[REPO_INDEX] ?? "null") ?? await repoManager.getInt(StorageKey.repoman_repoIndex), true);
+    final repoIndex = int.tryParse(event?[REPO_INDEX] ?? "null") ?? await repoManager.getInt(StorageKey.repoman_repoIndex);
+
+    // Check if this is a scheduled sync
+    // Don't skip for user-triggered syncs
+    final isScheduledSync = event?["scheduled"] == true;
+
+    if (!isScheduledSync) {
+      gitSyncService.debouncedSync(repoIndex, true);
+      return;
+    }
+
+    // For scheduled syncs, check for merge conflicts
+    try {
+      final conflictingFiles = await GitManager.getConflicting(repoIndex, 3);
+      if (conflictingFiles.isNotEmpty) {
+        // Skip scheduled sync if merge conflicts exist
+        return;
+      }
+    } catch (e) {
+      // If we can't check for conflicts, proceed with sync
+    }
+
+    gitSyncService.debouncedSync(repoIndex, true);
   });
 
   service.on(GitsyncService.INTENT_SYNC).listen((event) async {
@@ -719,6 +754,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
   Timer? queueTimer;
 
   Timer? autoRefreshTimer;
+  bool _isAppInForeground = true;
   StreamSubscription<List<ConnectivityResult>>? networkSubscription;
   late AnchorScrollController recentCommitsController = AnchorScrollController(
     onIndexChanged: (index, userScroll) {
@@ -1172,8 +1208,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
   }
 
   Future<void> updateRecommendedAction({int? override, bool useOverride = false}) async {
-    if (!await uiSettingsManager.getClientModeEnabled()) {
-      await updateSyncOptions();
+    if (!await uiSettingsManager.getClientModeEnabled() || !_isAppInForeground) {
       return;
     }
     autoRefreshTimer?.cancel();
@@ -1197,6 +1232,10 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
 
   void _scheduleNextRecommendedAction(DateTime startTime) {
     autoRefreshTimer?.cancel();
+    
+    // Only schedule if app is in foreground
+    if (!_isAppInForeground) return;
+    
     const minDelay = Duration(seconds: 10);
     final elapsed = DateTime.now().difference(startTime);
     final remaining = minDelay - elapsed;
@@ -1556,10 +1595,12 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver, Re
     }
 
     if (state == AppLifecycleState.resumed) {
+      _isAppInForeground = true;
       await GitManager.clearLocks();
       await reloadAll();
     }
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _isAppInForeground = false;
       autoRefreshTimer?.cancel();
     }
   }

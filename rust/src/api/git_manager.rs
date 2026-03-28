@@ -2453,6 +2453,18 @@ pub async fn download_changes(
     );
     let repo = swl!(Repository::open(path_string))?;
     set_author(&repo, &author);
+
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
+
     swl!(repo.cleanup_state())?;
 
     swl!(fetch_remote_priv(
@@ -2463,21 +2475,89 @@ pub async fn download_changes(
         &log_callback
     ))?;
 
-    if tokio::task::block_in_place(|| {
+    let pull_result = tokio::task::block_in_place(|| {
         pull_changes_priv(
             &repo,
             &provider,
             &credentials,
-            commit_signing_credentials,
+            commit_signing_credentials.clone(),
             sync_callback,
             &log_callback,
         )
-    }) == Ok(Some(false))
-    {
-        return Ok(Some(false));
+    });
+
+    match pull_result {
+        Ok(Some(false)) => Ok(Some(false)),
+        Ok(Some(true)) => Ok(Some(true)),
+        Ok(None) => Ok(Some(true)),
+        Err(e) => {
+            let err_msg = e.message().to_lowercase();
+            if err_msg.contains("target oid") && err_msg.contains("doesn't exist") {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PullFromRepo,
+                    "FETCH_HEAD OID stale (remote may have changed), re-fetching...".to_string(),
+                );
+                swl!(fetch_remote_priv(
+                    &repo,
+                    &remote,
+                    &provider,
+                    &credentials,
+                    &log_callback
+                ))?;
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PullFromRepo,
+                    "Re-fetch complete, pull will be retried on next sync".to_string(),
+                );
+                Err(e)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn ensure_head_attached(repo: &Repository) -> Result<bool, git2::Error> {
+    if !repo.head_detached()? {
+        return Ok(false);
     }
 
-    Ok(Some(true))
+    let head = repo.head()?;
+    let current_oid = head.target()
+        .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+    let mut matching_branches: Vec<String> = Vec::new();
+
+    let branches = repo.branches(Some(BranchType::Local))?;
+    for branch_result in branches {
+        let (branch, _) = branch_result?;
+        let branch_name = if let Some(name) = branch.name().ok().flatten() {
+            name.to_string()
+        } else {
+            continue;
+        };
+        
+        let branch_ref = branch.into_reference();
+        if let Ok(commit) = branch_ref.peel_to_commit() {
+            if commit.id() == current_oid {
+                matching_branches.push(branch_name);
+            }
+        }
+    }
+
+    match matching_branches.len() {
+        0 => Err(git2::Error::from_str("Detached HEAD: no branch contains current commit")),
+        1 => {
+            repo.set_head(&format!("refs/heads/{}", matching_branches[0]))?;
+            Ok(true)
+        }
+        _ => Err(git2::Error::from_str(&format!(
+            "Detached HEAD: current commit is on {} branches: {}. Choose manually.",
+            matching_branches.len(),
+            matching_branches.join(", ")
+        ))),
+    }
 }
 
 pub async fn push_changes(
@@ -2496,6 +2576,17 @@ pub async fn push_changes(
         "Getting local directory".to_string(),
     );
     let repo = swl!(Repository::open(&path_string))?;
+
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
 
     _log(
         Arc::clone(&log_callback),
@@ -2566,7 +2657,55 @@ fn push_changes_priv(
                 ))
             )?;
 
-        content.trim().to_string()
+        let trimmed = content.trim();
+
+        if trimmed.is_empty() || trimmed == "HEAD" || !trimmed.contains('/') {
+            let head = swl!(repo.head())?;
+            let resolved_head = swl!(head.resolve())?;
+            let branch_name = swl!(resolved_head
+                .shorthand()
+                .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
+
+            // Handle detached HEAD state where shorthand() returns literal "HEAD"
+            if branch_name == "HEAD" {
+                let current_oid = head.target()
+                    .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+                let mut matching_branches: Vec<String> = Vec::new();
+                if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                    for branch_result in branches.flatten() {
+                        let (branch, _) = branch_result;
+                        let branch_name_str = branch.name().ok().flatten().map(|s| s.to_string());
+                        if let Some(name) = branch_name_str {
+                            if let Ok(commit) = branch.into_reference().peel_to_commit() {
+                                if commit.id() == current_oid {
+                                    matching_branches.push(name);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                match matching_branches.len() {
+                    0 => {
+                        let default_branch = repo.find_branch("master", BranchType::Local)
+                            .or_else(|_| repo.find_branch("main", BranchType::Local))
+                            .ok()
+                            .and_then(|b| b.name().ok().flatten().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "master".to_string());
+                        format!("refs/heads/{}", default_branch)
+                    }
+                    1 => format!("refs/heads/{}", matching_branches[0]),
+                    _ => format!("refs/heads/{}", matching_branches[0]),
+                }
+            } else {
+                format!("refs/heads/{}", branch_name)
+            }
+        } else if trimmed.starts_with("refs/") {
+            trimmed.to_string()
+        } else {
+            format!("refs/{}", trimmed)
+        }
     } else {
         let head = swl!(repo.head())?;
         if !head.is_branch() {
@@ -2579,7 +2718,41 @@ fn push_changes_priv(
             .shorthand()
             .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
 
-        format!("refs/heads/{}", branch_name)
+        // Handle detached HEAD state where shorthand() returns literal "HEAD"
+        if branch_name == "HEAD" {
+            let current_oid = head.target()
+                .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+            let mut matching_branches: Vec<String> = Vec::new();
+            if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                for branch_result in branches.flatten() {
+                    let (branch, _) = branch_result;
+                    let branch_name_str = branch.name().ok().flatten().map(|s| s.to_string());
+                    if let Some(name) = branch_name_str {
+                        if let Ok(commit) = branch.into_reference().peel_to_commit() {
+                            if commit.id() == current_oid {
+                                matching_branches.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+
+            match matching_branches.len() {
+                0 => {
+                    let default_branch = repo.find_branch("master", BranchType::Local)
+                        .or_else(|_| repo.find_branch("main", BranchType::Local))
+                        .ok()
+                        .and_then(|b| b.name().ok().flatten().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "master".to_string());
+                    format!("refs/heads/{}", default_branch)
+                }
+                1 => format!("refs/heads/{}", matching_branches[0]),
+                _ => format!("refs/heads/{}", matching_branches[0]),
+            }
+        } else {
+            format!("refs/heads/{}", branch_name)
+        }
     };
 
     _log(
@@ -2621,6 +2794,35 @@ fn push_changes_priv(
                 .shorthand()
                 .ok_or_else(|| git2::Error::from_str("Invalid branch")))?;
 
+            // Handle detached HEAD state where shorthand() returns literal "HEAD"
+            let branch_name = if branch_name == "HEAD" {
+                let current_oid = head.target()
+                    .ok_or_else(|| git2::Error::from_str("Could not get HEAD target"))?;
+
+                let mut matching_branches: Vec<String> = Vec::new();
+                if let Ok(branches) = repo.branches(Some(BranchType::Local)) {
+                    for branch_result in branches.flatten() {
+                        let (branch, _) = branch_result;
+                        let branch_name_str = branch.name().ok().flatten().map(|s| s.to_string());
+                        if let Some(name) = branch_name_str {
+                            if let Ok(commit) = branch.into_reference().peel_to_commit() {
+                                if commit.id() == current_oid {
+                                    matching_branches.push(name);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                match matching_branches.len() {
+                    0 => "master".to_string(),
+                    1 => matching_branches[0].clone(),
+                    _ => matching_branches[0].clone(),
+                }
+            } else {
+                branch_name.to_string()
+            };
+
             let remote_branch_ref = format!("refs/remotes/{}/{}", remote_name, branch_name);
 
             _log(
@@ -2633,34 +2835,51 @@ fn push_changes_priv(
                 || repo.state() == RepositoryState::RebaseMerge
             {
                 let mut rebase = swl!(repo.open_rebase(None))?;
-                while let Some(op) = rebase.next() {
-                    let commit_id = swl!(op)?.id();
-                    let commit = swl!(repo.find_commit(commit_id))?;
-                    swl!(rebase.commit(None, &commit.author(), None))?;
-                }
-                match rebase.finish(None) {
-                    Ok(_) => {
-                        return Ok(Some(true));
+
+                // If we're in detached HEAD state, abort the rebase instead of trying to continue
+                if repo.head_detached().unwrap_or(false) {
+                    _log(
+                        Arc::clone(&log_callback),
+                        LogType::PushToRepo,
+                        "Detached HEAD during rebase - aborting rebase".to_string(),
+                    );
+                    swl!(rebase.abort())?;
+                    swl!(repo.cleanup_state())?;
+                } else {
+                    while let Some(op) = rebase.next() {
+                        let commit_id = swl!(op)?.id();
+                        let commit = swl!(repo.find_commit(commit_id))?;
+                        let author = commit.author();
+                        match swl!(rebase.commit(None, &author, None)) {
+                            Ok(_) => {}
+                            Err(e) if e.code() == ErrorCode::Applied => continue,
+                            Err(e) => return Err(e),
+                        }
                     }
-                    Err(e)
-                        if e.code() == ErrorCode::Modified || e.code() == ErrorCode::Unmerged =>
-                    {
-                        swl!(rebase.abort())?;
-                    }
-                    Err(e) => {
-                        _log(
-                            Arc::clone(&log_callback),
-                            LogType::PushToRepo,
-                            format!("{:?}", e.code()),
-                        );
-                        _log(
-                            Arc::clone(&log_callback),
-                            LogType::PushToRepo,
-                            (e.code() == ErrorCode::Unmerged).to_string(),
-                        );
-                        return Err(e).map_err(|e| {
-                            git2::Error::from_str(&format!("{} (at line {})", e.message(), line!()))
-                        });
+                    match rebase.finish(None) {
+                        Ok(_) => {
+                            return Ok(Some(true));
+                        }
+                        Err(e)
+                            if e.code() == ErrorCode::Modified || e.code() == ErrorCode::Unmerged =>
+                        {
+                            swl!(rebase.abort())?;
+                        }
+                        Err(e) => {
+                            _log(
+                                Arc::clone(&log_callback),
+                                LogType::PushToRepo,
+                                format!("{:?}", e.code()),
+                            );
+                            _log(
+                                Arc::clone(&log_callback),
+                                LogType::PushToRepo,
+                                (e.code() == ErrorCode::Unmerged).to_string(),
+                            );
+                            return Err(e).map_err(|e| {
+                                git2::Error::from_str(&format!("{} (at line {})", e.message(), line!()))
+                            });
+                        }
                     }
                 }
             }
@@ -2671,7 +2890,19 @@ fn push_changes_priv(
                 "Attempting rebase on REJECTED_NONFASTFORWARD3".to_string(),
             );
 
-            if repo.state() != RepositoryState::Clean {
+            // Handle MERGE state first before attempting to start rebase
+            // This prevents MERGE → REBASE transition which leaves repo in inconsistent state
+            if repo.state() == RepositoryState::Merge {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PushToRepo,
+                    "Repository in MERGE state, aborting merge before rebase".to_string(),
+                );
+                let head = swl!(repo.head()?.peel_to_commit())?;
+                swl!(repo.reset(head.as_object(), ResetType::Hard, None))?;
+                swl!(repo.cleanup_state())?;
+            } else if repo.state() != RepositoryState::Clean {
+                // Handle existing rebase state
                 if let Some(mut rebase) = repo.open_rebase(None).ok() {
                     swl!(rebase.abort())?;
                 }
@@ -2985,6 +3216,28 @@ pub async fn commit_changes(
     let repo = swl!(Repository::open(&path_string))?;
     set_author(&repo, &author);
 
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
+
+    match prune_corrupted_loose_objects(path_string.clone()).await {
+        Ok(_) => {}
+        Err(e) => {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Error pruning corrupted objects: {}", e.message()),
+            );
+        }
+    }
+
     if repo.state() == RepositoryState::Rebase
         || repo.state() == RepositoryState::RebaseMerge
     {
@@ -2995,11 +3248,26 @@ pub async fn commit_changes(
         );
 
         let mut rebase = swl!(repo.open_rebase(None))?;
+
+        // Note: We don't abort rebase here for detached HEAD because this function
+        // is called during user-initiated merge resolution, not just sync operations.
+        // The detached HEAD check is only in push_changes to handle sync-specific issues.
+
         let sig = swl!(repo
             .signature()
             .or_else(|_| Signature::now(&author.0, &author.1)))?;
 
-        swl!(rebase.commit(None, &sig, None))?;
+        match swl!(rebase.commit(None, &sig, None)) {
+            Ok(_) => {}
+            Err(e) if e.code() == ErrorCode::Applied => {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PushToRepo,
+                    "First rebase commit already applied, continuing...".to_string(),
+                );
+            }
+            Err(e) => return Err(e),
+        }
 
         while let Some(op) = rebase.next() {
             let commit_id = swl!(op)?.id();
@@ -3014,6 +3282,16 @@ pub async fn commit_changes(
                         LogType::PushToRepo,
                         "Subsequent rebase step has conflicts — leaving rebase in progress".to_string(),
                     );
+                    if repo.head_detached().unwrap_or(false) {
+                        if let Some(branch_name) = get_branch_name_priv(&repo) {
+                            swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+                            _log(
+                                Arc::clone(&log_callback),
+                                LogType::PushToRepo,
+                                format!("Reattached HEAD to branch: {}", branch_name),
+                            );
+                        }
+                    }
                     return Ok(());
                 }
                 Err(e) => return Err(e),
@@ -3027,6 +3305,17 @@ pub async fn commit_changes(
             LogType::PushToRepo,
             "Rebase finished successfully".to_string(),
         );
+
+        if repo.head_detached().unwrap_or(false) {
+            if let Some(branch_name) = get_branch_name_priv(&repo) {
+                swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::PushToRepo,
+                    format!("Reattached HEAD to branch: {}", branch_name),
+                );
+            }
+        }
 
         return Ok(());
     }
@@ -3109,6 +3398,28 @@ pub async fn upload_changes(
     let repo = swl!(Repository::open(&path_string))?;
     set_author(&repo, &author);
 
+    if let Err(e) = ensure_head_attached(&repo) {
+        let err_msg = e.message().to_lowercase();
+        if err_msg.contains("detached head") {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Detached HEAD: {}", e.message()),
+            );
+        }
+    }
+
+    match prune_corrupted_loose_objects(path_string.clone()).await {
+        Ok(_) => {}
+        Err(e) => {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::Global,
+                format!("Error pruning corrupted objects: {}", e.message()),
+            );
+        }
+    }
+
     _log(
         Arc::clone(&log_callback),
         LogType::PushToRepo,
@@ -3151,44 +3462,72 @@ pub async fn upload_changes(
         uncommitted_file_paths.into_iter().map(|(p, _)| p).collect()
     };
 
-    match index.add_all(paths.iter(), git2::IndexAddOption::DEFAULT, None) {
-        Ok(_) => {}
-        Err(_) => {
-            let non_submodule_paths: Vec<&String> = paths
-                .iter()
-                .filter(|path| repo.find_submodule(path).is_err())
-                .collect();
-            swl!(index.update_all(non_submodule_paths.iter(), None))?;
+    let max_retries = 3;
+    let mut last_error = None;
+    let mut updated_tree_oid: Option<git2::Oid> = None;
+    for attempt in 0..max_retries {
+        if attempt > 0 {
+            _log(
+                Arc::clone(&log_callback),
+                LogType::PushToRepo,
+                format!("Retrying index operations (attempt {}/{})", attempt + 1, max_retries),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2000 * (attempt as u64)));
         }
-    }
 
-    for path in &paths {
-        if let Ok(mut sm) = repo.find_submodule(path) {
-            if let Ok(sm_repo) = sm.open() {
+        match index.add_all(paths.iter(), git2::IndexAddOption::DEFAULT, None) {
+            Ok(_) => {}
+            Err(e) => {
+                let err_msg = e.message().to_lowercase();
+                if err_msg.contains("file changed") && attempt < max_retries - 1 {
+                    last_error = Some(e);
+                    continue;
+                }
+                let non_submodule_paths: Vec<&String> = paths
+                    .iter()
+                    .filter(|path| repo.find_submodule(path).is_err())
+                    .collect();
+                swl!(index.update_all(non_submodule_paths.iter(), None))?;
+            }
+        }
+
+        for path in &paths {
+            if let Ok(mut sm) = repo.find_submodule(path) {
+                let sm_repo = swl!(sm.open())?;
                 swl!(sm_repo.index()?.write())?;
                 swl!(sm.add_to_index(false))?;
             }
         }
+
+        swl!(index.write())?;
+
+        updated_tree_oid = if !index.has_conflicts() {
+            match swl!(index.write_tree()) {
+                Ok(oid) => Some(oid),
+                Err(e) => {
+                    let err_msg = e.message().to_lowercase();
+                    if err_msg.contains("file changed") && attempt < max_retries - 1 {
+                        last_error = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        } else {
+            None
+        };
+
+        break;
     }
 
-    swl!(index.write())?;
-
-    if index.has_conflicts() {
-        _log(
-            Arc::clone(&log_callback),
-            LogType::PushToRepo,
-            "Index has unresolved conflicts, skipping commit".to_string(),
-        );
-        flutter_rust_bridge::spawn(async move {
-            merge_conflict_callback().await;
-        });
-        return Ok(Some(false));
+    if let Some(e) = last_error {
+        return Err(e);
     }
-    let updated_tree_oid = swl!(index.write_tree())?;
 
-    let should_commit = match initial_tree_oid {
-        Some(old) => old != updated_tree_oid,
-        None => true,
+    let should_commit = match (initial_tree_oid, updated_tree_oid) {
+        (Some(old), Some(new)) => old != new,
+        (None, None) => true,
+        _ => true,
     };
 
     // Only commit if the index has actually changed
@@ -3263,14 +3602,45 @@ pub async fn force_pull(
     let repo = swl!(Repository::open(&path_string))?;
     swl!(repo.cleanup_state())?;
 
-    let fetch_commit = match repo.find_reference("FETCH_HEAD") {
-        Ok(r) => swl!(repo.reference_to_annotated_commit(&r))?,
-        Err(_) => {
-            return Err(git2::Error::from_str(
-                "No fetch data found. Please fetch or sync before force pulling.",
-            ));
+    if let Ok(mut remote) = repo.find_remote("origin") {
+        configure_network_timeouts(&repo);
+        let callbacks = get_default_callbacks(None, None);
+        let mut fetch_options = FetchOptions::new();
+        fetch_options.update_fetchhead(true);
+        fetch_options.remote_callbacks(callbacks);
+        let _ = remote.fetch::<&str>(&[], Some(&mut fetch_options), None);
+    }
+
+    let fetch_commit = match swl!(repo
+        .find_reference("FETCH_HEAD")
+        .and_then(|r| repo.reference_to_annotated_commit(&r))) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = e.message().to_lowercase();
+            if err_msg.contains("target oid") && err_msg.contains("doesn't exist") {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::ForcePull,
+                    "FETCH_HEAD OID stale, re-fetching...".to_string(),
+                );
+                if let Ok(mut remote) = repo.find_remote("origin") {
+                    configure_network_timeouts(&repo);
+                    let callbacks = get_default_callbacks(None, None);
+                    let mut fetch_options = FetchOptions::new();
+                    fetch_options.update_fetchhead(true);
+                    fetch_options.remote_callbacks(callbacks);
+                    swl!(remote.fetch::<&str>(&[], Some(&mut fetch_options), None))?;
+                    swl!(repo.find_reference("FETCH_HEAD")
+                        .and_then(|r| repo.reference_to_annotated_commit(&r)))?
+                } else {
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
         }
     };
+};
 
     let git_dir = repo.path();
     let rebase_head_path = git_dir.join("rebase-merge").join("head-name");
@@ -3692,9 +4062,30 @@ pub async fn download_and_overwrite(
 
     swl!(remote.fetch::<&str>(&[], Some(&mut fetch_options), None))?;
 
-    let fetch_commit = swl!(repo
+    let fetch_commit = match swl!(repo
         .find_reference("FETCH_HEAD")
-        .and_then(|r| repo.reference_to_annotated_commit(&r)))?;
+        .and_then(|r| repo.reference_to_annotated_commit(&r))) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = e.message().to_lowercase();
+            if err_msg.contains("target oid") && err_msg.contains("doesn't exist") {
+                _log(
+                    Arc::clone(&log_callback),
+                    LogType::ForcePull,
+                    "FETCH_HEAD OID stale, re-fetching...".to_string(),
+                );
+                let callbacks = get_default_callbacks(Some(&provider), Some(&credentials));
+                let mut fetch_options = FetchOptions::new();
+                fetch_options.update_fetchhead(true);
+                fetch_options.remote_callbacks(callbacks);
+                swl!(remote.fetch::<&str>(&[], Some(&mut fetch_options), None))?;
+                swl!(repo.find_reference("FETCH_HEAD")
+                    .and_then(|r| repo.reference_to_annotated_commit(&r)))?
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
     let git_dir = repo.path();
     let rebase_head_path = git_dir.join("rebase-merge").join("head-name");
@@ -3706,7 +4097,20 @@ pub async fn download_and_overwrite(
                 ))
             )?;
 
-        content.trim().to_string()
+        let trimmed = content.trim();
+
+        if trimmed.is_empty() || trimmed == "HEAD" || !trimmed.contains('/') {
+            let head = swl!(repo.head())?;
+            let resolved_head = swl!(head.resolve())?;
+            let branch_name = swl!(resolved_head
+                .shorthand()
+                .ok_or_else(|| git2::Error::from_str("Could not determine branch name")))?;
+            format!("refs/heads/{}", branch_name)
+        } else if trimmed.starts_with("refs/") {
+            trimmed.to_string()
+        } else {
+            format!("refs/{}", trimmed)
+        }
     } else {
         let head = swl!(repo.head())?;
         let resolved_head = swl!(head.resolve())?;
@@ -4613,7 +5017,7 @@ pub async fn prune_corrupted_loose_objects(path_string: String) -> Result<(), gi
 
             if let Err(e) = odb.read_header(oid) {
                 let msg = e.message().to_lowercase();
-                if msg.contains("failed to parse loose object") {
+                if msg.contains("failed to parse loose object") || msg.contains("invalid header") {
                     let _ = fs::remove_file(file_entry.path());
                     pruned += 1;
                 }
