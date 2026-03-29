@@ -313,6 +313,48 @@ This prevents battery drain from infinite retry loops while user is away, but st
 | 13 | Abort rebase sync only | `fix/abort-rebase-sync-only` | `6bc87e7` |
 | 14 | Detached HEAD after rebase (commit) | `fix/rebase-cleanup-state` | (pending) |
 | 15 | Detached HEAD after rebase (push) | `fix/rebase-cleanup-state` | (pending) |
+| 16 | Rust Compilation Errors | `fix/rust-syntax-error` | `d7494c2` |
+| 17 | Missing FRB Bindings | `fix/frb-bindings` | `2c872f4` |
+
+---
+
+## Bug #16: Rust Compilation Errors
+
+**Error:** Multiple syntax errors preventing `cargo check` from passing
+
+**Issues Fixed:**
+- Extra closing brace `};` in force_pull function
+- Malformed `.map_err()` after return statement (4 instances)
+- Missing `.unwrap()` for `updated_tree_oid` Option type
+
+**Files Modified:**
+- `rust/src/api/git_manager.rs`
+
+**See:** `bug-report_rust-compilation-errors.md`
+
+---
+
+## Bug #17: Missing FRB Bindings
+
+**Error:** Runtime errors when using Squash, Amend, Revert, Undo, Reset, CherryPick operations
+
+**Root Cause:** FRB code generator was not run after adding new Rust functions
+
+**Fix:** Ran `flutter_rust_bridge_codegen generate` to regenerate bindings
+
+**Functions Now Available:**
+- squash_commits
+- amend_commit
+- revert_commit
+- undo_commit
+- reset_to_commit
+- cherry_pick_commit
+
+**Files Modified:**
+- `lib/src/rust/frb_generated.dart`
+- `lib/src/rust/api/git_manager.dart`
+
+**See:** `bug-report_missing-frb-bindings.md`
 
 ---
 
