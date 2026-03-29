@@ -1211,7 +1211,7 @@ class GitManager {
           syncCallback: syncCallback,
           log: _logWrapper,
         );
-      } on AnyhowException catch (e) {
+      } on AnyhowException catch (e, stackTrace) {
         if (_isNetworkStallError(e.message)) {
           Logger.gmLog(type: LogType.DownloadChanges, "Network stall - will retry");
           lastOperationWasNetworkStall = true;
