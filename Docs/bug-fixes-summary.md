@@ -260,27 +260,31 @@ This prevents battery drain from infinite retry loops while user is away, but st
 
 ---
 
-### 14. Detached HEAD After Rebase
+### 14. Detached HEAD After Rebase (commit_changes)
 
-**Issue:** Repository ends up in detached HEAD state after rebase operations, either successful or with conflicts.
+**Issue:** Repository ends up in detached HEAD state after rebase operations in commit_changes function.
 
-**Root Cause:** After the rebase block in `commit_changes`, the code returned without ensuring HEAD was attached to a branch. This happened in two scenarios:
-1. After successful rebase completion (`rebase.finish()`)
-2. When subsequent rebase steps have conflicts (returns early with `Ok(())`)
+**Root Cause:** After the rebase block in `commit_changes`, the code returned without ensuring HEAD was attached to a branch.
 
-**Fix:** Added code after the rebase block to reattach HEAD to the branch:
-- Checks if `repo.head_detached()` is true
-- Uses `get_branch_name_priv()` to get the current branch name
-- Calls `repo.set_head()` to reattach HEAD to `refs/heads/{branch_name}`
-
-This ensures HEAD is always reattached after the rebase block completes or returns early with conflicts.
-
-**Branch:** `fix/rebase-cleanup-state`  
-**Commit:** (current branch, not yet merged)
+**Fix:** Added code after the rebase block to reattach HEAD to the branch in commit_changes function.
 
 **Files Modified:**
-- `rust/src/api/git_manager.rs` - Lines 2935-2960 (after rebase.finish)
-- `rust/src/api/git_manager.rs` - Lines 2923-2940 (after conflict on subsequent step)
+- `rust/src/api/git_manager.rs` - Lines 3285-3315 (commit_changes function)
+
+---
+
+### 15. Detached HEAD After Rebase (push_changes)
+
+**Issue:** Repository ends up in detached HEAD state after rebase operations in push_changes function.
+
+**Root Cause:** After the rebase block in `push_changes`, the code returned without ensuring HEAD was attached to a branch. This was missed in the initial fix which only covered commit_changes.
+
+**Fix:** Added code after the rebase block to reattach HEAD to the branch in push_changes function:
+- First rebase path (existing rebase state): Line ~2870
+- Second rebase path (new rebase): Line ~2970
+
+**Files Modified:**
+- `rust/src/api/git_manager.rs` - Lines ~2870 and ~2970 (push_changes function)
 
 ---
 
@@ -301,7 +305,8 @@ This ensures HEAD is always reattached after the rebase block completes or retur
 | 11 | Sync during merge | `fix/skip-sync-during-merge` | `5b45a24` |
 | 12 | Sync retry backoff | `fix/sync-retry-backoff` | `effc96a` |
 | 13 | Abort rebase sync only | `fix/abort-rebase-sync-only` | `6bc87e7` |
-| 14 | Detached HEAD after rebase | `fix/rebase-cleanup-state` | (pending) |
+| 14 | Detached HEAD after rebase (commit) | `fix/rebase-cleanup-state` | (pending) |
+| 15 | Detached HEAD after rebase (push) | `fix/rebase-cleanup-state` | (pending) |
 
 ---
 
@@ -317,7 +322,8 @@ This ensures HEAD is always reattached after the rebase block completes or retur
 - [x] Scheduled sync skipped during active merge conflict
 - [x] MERGE state handled correctly before rebase
 - [x] Sync retry with exponential backoff (prevents battery drain)
-- [x] Detached HEAD after rebase (successful or with conflicts)
+- [x] Detached HEAD after rebase (commit_changes)
+- [x] Detached HEAD after rebase (push_changes)
 
 ## Log Patterns to Watch For
 

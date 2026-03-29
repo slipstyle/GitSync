@@ -2858,6 +2858,17 @@ fn push_changes_priv(
                     }
                     match rebase.finish(None) {
                         Ok(_) => {
+                            // Reattach HEAD to branch after rebase completes
+                            if repo.head_detached().unwrap_or(false) {
+                                if let Some(branch_name) = get_branch_name_priv(&repo) {
+                                    swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+                                    _log(
+                                        Arc::clone(&log_callback),
+                                        LogType::PushToRepo,
+                                        format!("Reattached HEAD to branch: {}", branch_name),
+                                    );
+                                }
+                            }
                             return Ok(Some(true));
                         }
                         Err(e)
@@ -2950,6 +2961,18 @@ fn push_changes_priv(
             }
 
             swl!(rebase.finish(None))?;
+
+            // Reattach HEAD to branch after rebase completes
+            if repo.head_detached().unwrap_or(false) {
+                if let Some(branch_name) = get_branch_name_priv(&repo) {
+                    swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
+                    _log(
+                        Arc::clone(&log_callback),
+                        LogType::PushToRepo,
+                        format!("Reattached HEAD to branch: {}", branch_name),
+                    );
+                }
+            }
 
             _log(
                 Arc::clone(&log_callback),

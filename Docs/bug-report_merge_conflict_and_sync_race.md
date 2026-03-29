@@ -263,15 +263,19 @@ if repo.head_detached().unwrap_or(false) {
 }
 ```
 
-This fix is applied in two locations:
+This fix was initially applied in commit_changes function in two locations:
 1. After successful rebase completion (line ~2943)
 2. After conflict on subsequent rebase step (line ~2929)
+
+**Additional Fix (Bug 8):** The same fix was later extended to `push_changes` function to handle the same issue when sync operations use push_changes instead of commit_changes:
+- First rebase path (existing rebase state): Line ~2870
+- Second rebase path (new rebase): Line ~2970
 
 **Branch:** `fix/rebase-cleanup-state`
 
 **Files Modified:**
-- `rust/src/api/git_manager.rs` - Lines 2935-2960 (after rebase.finish)
-- `rust/src/api/git_manager.rs` - Lines 2923-2940 (after conflict on subsequent step)
+- `rust/src/api/git_manager.rs` - commit_changes function (Lines ~3285-3315)
+- `rust/src/api/git_manager.rs` - push_changes function (Lines ~2870 and ~2970)
 
 ---
 
@@ -285,7 +289,8 @@ This fix is applied in two locations:
 | 4: MERGE→REBASE | `fix/merge-to-rebase-transition` | `38fe42f` | ✅ Fixed |
 | 5: Sync during merge | `fix/skip-sync-during-merge` | `5b45a24` | ✅ Fixed |
 | 6: File changed retry | `fix/sync-retry-backoff` | `effc96a` | ✅ Fixed |
-| 7: Detached HEAD after rebase | `fix/rebase-cleanup-state` | (pending) | ✅ Fixed |
+| 7: Detached HEAD after rebase (commit) | `fix/rebase-cleanup-state` | (pending) | ✅ Fixed |
+| 8: Detached HEAD after rebase (push) | `fix/rebase-cleanup-state` | (pending) | ✅ Fixed |
 
 ---
 
