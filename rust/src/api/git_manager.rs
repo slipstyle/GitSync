@@ -4427,7 +4427,6 @@ fn get_uncommitted_file_paths_priv(
     opts.include_untracked(include_untracked);
     opts.include_ignored(false);
     opts.update_index(true);
-    opts.show(git2::StatusShow::Workdir);
     let statuses = swl!(repo.statuses(Some(&mut opts)))?;
 
     let mut file_paths = Vec::new();
