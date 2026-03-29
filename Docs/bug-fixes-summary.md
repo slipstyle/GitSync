@@ -283,6 +283,12 @@ This prevents battery drain from infinite retry loops while user is away, but st
 - First rebase path (existing rebase state): Line ~2870
 - Second rebase path (new rebase): Line ~2970
 
+**Implementation Note:** The fix now uses the existing `ensure_head_attached()` function instead of `get_branch_name_priv()`. The previous implementation incorrectly used `get_branch_name_priv()` which returns `None` when HEAD is detached. The `ensure_head_attached()` function properly handles detached HEAD by:
+1. Finding all local branches containing the current commit
+2. Only auto-reattaching when exactly 1 branch matches (safe)
+3. Returning error for 0 or 2+ matches (ambiguous cases)
+4. Logging appropriately at each step
+
 **Files Modified:**
 - `rust/src/api/git_manager.rs` - Lines ~2870 and ~2970 (push_changes function)
 

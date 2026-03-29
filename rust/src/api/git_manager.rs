@@ -2859,14 +2859,26 @@ fn push_changes_priv(
                     match rebase.finish(None) {
                         Ok(_) => {
                             // Reattach HEAD to branch after rebase completes
+                            // Use ensure_head_attached for proper branch detection logic
                             if repo.head_detached().unwrap_or(false) {
-                                if let Some(branch_name) = get_branch_name_priv(&repo) {
-                                    swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
-                                    _log(
-                                        Arc::clone(&log_callback),
-                                        LogType::PushToRepo,
-                                        format!("Reattached HEAD to branch: {}", branch_name),
-                                    );
+                                match ensure_head_attached(&repo) {
+                                    Ok(true) => {
+                                        _log(
+                                            Arc::clone(&log_callback),
+                                            LogType::PushToRepo,
+                                            "Reattached HEAD to branch after rebase".to_string(),
+                                        );
+                                    }
+                                    Ok(false) => {
+                                        // HEAD was not detached, already attached
+                                    }
+                                    Err(e) => {
+                                        _log(
+                                            Arc::clone(&log_callback),
+                                            LogType::PushToRepo,
+                                            format!("Could not reattach HEAD after rebase: {}", e),
+                                        );
+                                    }
                                 }
                             }
                             return Ok(Some(true));
@@ -2963,14 +2975,26 @@ fn push_changes_priv(
             swl!(rebase.finish(None))?;
 
             // Reattach HEAD to branch after rebase completes
+            // Use ensure_head_attached for proper branch detection logic
             if repo.head_detached().unwrap_or(false) {
-                if let Some(branch_name) = get_branch_name_priv(&repo) {
-                    swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
-                    _log(
-                        Arc::clone(&log_callback),
-                        LogType::PushToRepo,
-                        format!("Reattached HEAD to branch: {}", branch_name),
-                    );
+                match ensure_head_attached(&repo) {
+                    Ok(true) => {
+                        _log(
+                            Arc::clone(&log_callback),
+                            LogType::PushToRepo,
+                            "Reattached HEAD to branch after rebase".to_string(),
+                        );
+                    }
+                    Ok(false) => {
+                        // HEAD was not detached, already attached
+                    }
+                    Err(e) => {
+                        _log(
+                            Arc::clone(&log_callback),
+                            LogType::PushToRepo,
+                            format!("Could not reattach HEAD after rebase: {}", e),
+                        );
+                    }
                 }
             }
 
@@ -3305,14 +3329,27 @@ pub async fn commit_changes(
                         LogType::PushToRepo,
                         "Subsequent rebase step has conflicts — leaving rebase in progress".to_string(),
                     );
+                    // Reattach HEAD to branch after rebase conflict
+                    // Use ensure_head_attached for proper branch detection logic
                     if repo.head_detached().unwrap_or(false) {
-                        if let Some(branch_name) = get_branch_name_priv(&repo) {
-                            swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
-                            _log(
-                                Arc::clone(&log_callback),
-                                LogType::PushToRepo,
-                                format!("Reattached HEAD to branch: {}", branch_name),
-                            );
+                        match ensure_head_attached(&repo) {
+                            Ok(true) => {
+                                _log(
+                                    Arc::clone(&log_callback),
+                                    LogType::PushToRepo,
+                                    "Reattached HEAD to branch after rebase conflict".to_string(),
+                                );
+                            }
+                            Ok(false) => {
+                                // HEAD was not detached, already attached
+                            }
+                            Err(e) => {
+                                _log(
+                                    Arc::clone(&log_callback),
+                                    LogType::PushToRepo,
+                                    format!("Could not reattach HEAD after rebase conflict: {}", e),
+                                );
+                            }
                         }
                     }
                     return Ok(());
@@ -3329,14 +3366,27 @@ pub async fn commit_changes(
             "Rebase finished successfully".to_string(),
         );
 
+        // Reattach HEAD to branch after rebase completes
+        // Use ensure_head_attached for proper branch detection logic
         if repo.head_detached().unwrap_or(false) {
-            if let Some(branch_name) = get_branch_name_priv(&repo) {
-                swl!(repo.set_head(&format!("refs/heads/{}", branch_name)))?;
-                _log(
-                    Arc::clone(&log_callback),
-                    LogType::PushToRepo,
-                    format!("Reattached HEAD to branch: {}", branch_name),
-                );
+            match ensure_head_attached(&repo) {
+                Ok(true) => {
+                    _log(
+                        Arc::clone(&log_callback),
+                        LogType::PushToRepo,
+                        "Reattached HEAD to branch after rebase".to_string(),
+                    );
+                }
+                Ok(false) => {
+                    // HEAD was not detached, already attached
+                }
+                Err(e) => {
+                    _log(
+                        Arc::clone(&log_callback),
+                        LogType::PushToRepo,
+                        format!("Could not reattach HEAD after rebase: {}", e),
+                    );
+                }
             }
         }
 

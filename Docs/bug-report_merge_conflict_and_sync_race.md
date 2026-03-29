@@ -274,8 +274,10 @@ This fix was initially applied in commit_changes function in two locations:
 **Branch:** `fix/rebase-cleanup-state`
 
 **Files Modified:**
-- `rust/src/api/git_manager.rs` - commit_changes function (Lines ~3285-3315)
-- `rust/src/api/git_manager.rs` - push_changes function (Lines ~2870 and ~2970)
+- `rust/src/api/git_manager.rs` - commit_changes function (Lines ~3335-3377)
+- `rust/src/api/git_manager.rs` - push_changes function (Lines ~2864-2880 and ~2980-3000)
+
+**Implementation Note:** The fix uses `ensure_head_attached()` function instead of `get_branch_name_priv()`. This ensures proper branch detection when HEAD is detached.
 
 ---
 
