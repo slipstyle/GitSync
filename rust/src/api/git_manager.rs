@@ -4458,19 +4458,26 @@ fn get_uncommitted_file_paths_priv(
             continue;
         }
 
-        match status {
-            Status::WT_MODIFIED => {
-                file_paths.push((path.to_string(), 1)); // Change
-            }
-            Status::WT_DELETED => {
-                file_paths.push((path.to_string(), 2)); // Deletion
-            }
-            Status::WT_NEW => {
-                file_paths.push((path.to_string(), 3)); // Addition
-            }
-            _ => {}
+        let is_index_modified = status.intersects(Status::INDEX_NEW | Status::INDEX_MODIFIED | Status::INDEX_DELETED);
+        let is_wt_modified = status.intersects(Status::WT_NEW | Status::WT_MODIFIED | Status::WT_DELETED);
+
+        if is_index_modified || is_wt_modified {
+            let status_type = if status.intersects(Status::INDEX_NEW | Status::WT_NEW) {
+                3 // Addition
+            } else if status.intersects(Status::INDEX_DELETED | Status::WT_DELETED) {
+                2 // Deletion
+            } else {
+                1 // Modification
+            };
+            file_paths.push((path.to_string(), status_type));
         }
     }
+
+    _log(
+        Arc::clone(&log_callback),
+        LogType::UncommittedFiles,
+        format!("Found {} uncommitted files", file_paths.len()),
+    );
 
     Ok(file_paths)
 }
