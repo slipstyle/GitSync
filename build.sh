@@ -6,8 +6,9 @@
 # CUSTOMIZE THESE PATHS FOR YOUR SYSTEM
 # ============================================
 
-FLUTTER_HOME=${FLUTTER_HOME:-"/home/slips/src/flutter"}  # e.g., ~/flutter, /opt/flutter, /home/user/src/flutter
-ANDROID_HOME=${ANDROID_HOME:-"/home/slips/src/android-sdk"}   # e.g., ~/Android/Sdk, /opt/android-sdk
+FLUTTER_HOME=${FLUTTER_HOME:-"/home/slips/src/flutter"}
+ANDROID_HOME=${ANDROID_HOME:-"/home/slips/src/android-sdk"}
+CARGO_HOME=${CARGO_HOME:-"/home/slips/.cargo"}
 
 # ============================================
 # AUTO-DETECTION (optional - uncomment if needed)
@@ -26,9 +27,12 @@ ANDROID_HOME=${ANDROID_HOME:-"/home/slips/src/android-sdk"}   # e.g., ~/Android/
 # ENVIRONMENT SETUP
 # ============================================
 
-# Add Flutter to PATH
+# Add Flutter and Cargo to PATH
 if [ -n "$FLUTTER_HOME" ]; then
     export PATH="$FLUTTER_HOME/bin:$PATH"
+fi
+if [ -n "$CARGO_HOME" ]; then
+    export PATH="$CARGO_HOME/bin:$PATH"
 fi
 
 # Set Android SDK environment variables

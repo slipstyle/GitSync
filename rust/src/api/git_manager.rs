@@ -3625,7 +3625,7 @@ pub async fn upload_changes(
             None => vec![],
         };
 
-        let tree = swl!(repo.find_tree(updated_tree_oid))?;
+        let tree = swl!(repo.find_tree(updated_tree_oid.unwrap()))?;
 
         swl!(commit(
             &repo,
@@ -3713,7 +3713,6 @@ pub async fn force_pull(
             }
         }
     };
-};
 
     let git_dir = repo.path();
     let rebase_head_path = git_dir.join("rebase-merge").join("head-name");
